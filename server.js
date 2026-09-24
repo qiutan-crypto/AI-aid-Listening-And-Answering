@@ -138,6 +138,19 @@ wss.on("connection", (ws) => {
   bridgeToDeepgram(ws);
 });
 
+// 端口被占用等启动错误（WebSocketServer 会把同一个错误再转发一次，两处都要接住）
+function onListenError(err) {
+  if (err.code === "EADDRINUSE") {
+    console.error(`\n端口 ${PORT} 已经被别的程序占用了。`);
+    console.error("请用记事本打开 .env，加一行 PORT=3001（或其它没被占用的数字），保存后重新启动。\n");
+  } else {
+    console.error("服务器启动失败：", err);
+  }
+  process.exit(1);
+}
+server.on("error", onListenError);
+wss.on("error", onListenError);
+
 server.listen(PORT, HOST, () => {
   console.log(`对话辅助已启动： http://localhost:${PORT}`);
   const ai = activeProvider();
