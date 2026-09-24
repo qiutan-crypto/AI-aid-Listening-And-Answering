@@ -1,4 +1,4 @@
-// Claude：根据对话记录生成文字提示（流式返回）。没有填 GEMINI_API_KEY 时使用。
+// Claude：通话中流式生成英文提示；通话后生成中文解释（JSON）。没有填 GEMINI_API_KEY 时使用。
 import Anthropic from "@anthropic-ai/sdk";
 
 const MODEL = process.env.HINT_MODEL || "claude-opus-5";
@@ -35,6 +35,27 @@ export async function stream({ system, userMessage, onText, signal }) {
   if (message.stop_reason === "refusal") {
     onText("\n\n[AI 没有给出这条建议，请换个说法再试。]");
   }
+}
+
+/** 返回按 schema 解析好的 JSON 对象 */
+export async function json({ system, userMessage, schema, signal }) {
+  const s = getClient().beta.messages.stream(
+    {
+      model: MODEL,
+      max_tokens: 16000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "low", format: { type: "json_schema", schema } },
+      system: [{ type: "text", text: system }],
+      messages: [{ role: "user", content: userMessage }],
+    },
+    { signal },
+  );
+  const message = await s.finalMessage();
+  if (message.stop_reason === "refusal") throw new Error("AI 没有生成这部分解释，请再试一次");
+  if (message.stop_reason === "max_tokens") throw new Error("对话太长，解释没写完，请再试一次");
+  const text = message.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+  return JSON.parse(text);
 }
 
 export function describeError(err) {

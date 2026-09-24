@@ -12,6 +12,14 @@ const els = {
   fontDown: $("fontDown"),
   engine: $("engine"),
   scene: $("scene"),
+  panes: $("panes"),
+  review: $("review"),
+  reviewBtn: $("reviewBtn"),
+  reviewList: $("reviewList"),
+  reviewProgress: $("reviewProgress"),
+  explainBtn: $("explainBtn"),
+  downloadBtn: $("downloadBtn"),
+  backBtn: $("backBtn"),
   micDevice: $("micDevice"),
   micRefresh: $("micRefresh"),
   meter: $("meter"),
@@ -259,12 +267,20 @@ els.clearBtn.addEventListener("click", () => {
   els.transcript.innerHTML = '<p class="empty">已清空。</p>';
   els.hints.innerHTML = '<p class="empty">已清空。</p>';
   hinted = { id: 0, len: 0 };
+  hintLog = [];
+  explainCache.clear();
 });
 
 // ---------- AI 提示 ----------
 let hintTimer = null;
 let hintAbort = null;
 let hinted = { id: 0, len: 0 }; // 已经给过提示的那一行「对方」的话（行号 + 长度）
+/**
+ * 每一条提示的记录，回顾时用
+ * @type {{id:number, lineId:number|null, afterLineId:number, focus:string, raw:string, done:boolean, superseded:boolean, time:Date}[]}
+ */
+let hintLog = [];
+let hintSeq = 0;
 
 function scheduleAutoHint(delay = 1100) {
   if (!els.autoHint.checked) return;
@@ -306,6 +322,17 @@ async function requestHint({ auto = false, focus = "" } = {}) {
   const quote = focus ? "你问：" + focus : "对方：" + (lastThem.text + " " + lastThem.interim).trim();
   const card = createHintCard(quote);
   let raw = "";
+  const entry = {
+    id: ++hintSeq,
+    lineId: focus ? null : lastThem.id,
+    afterLineId: lines.length ? lines[lines.length - 1].id : 0,
+    focus,
+    raw: "",
+    done: false,
+    superseded: false,
+    time: new Date(),
+  };
+  hintLog.push(entry);
 
   try {
     const res = await fetch("/api/hint", {
@@ -321,18 +348,23 @@ async function requestHint({ auto = false, focus = "" } = {}) {
       const { value, done } = await reader.read();
       if (done) break;
       raw += decoder.decode(value, { stream: true });
+      entry.raw = raw;
       renderHint(card, raw);
     }
     raw += decoder.decode();
+    entry.raw = raw;
+    entry.done = true;
     renderHint(card, raw);
     card.classList.remove("pending");
   } catch (err) {
     card.classList.remove("pending");
     if (err.name === "AbortError") {
+      entry.superseded = true;
       if (!raw) card.remove();
       else card.querySelector(".card-head").textContent += "（已被新的提示替换）";
     } else {
-      renderHint(card, raw + "\n[错误] " + err.message);
+      entry.raw = raw + "\n[错误] " + err.message;
+      renderHint(card, entry.raw);
     }
   } finally {
     if (hintAbort === controller) hintAbort = null;
@@ -357,7 +389,7 @@ function createHintCard(quote) {
   return card;
 }
 
-/** 把 AI 返回的文字排版：【标题】、英文建议（大字）、中文意思（小字） */
+/** 把 AI 返回的文字排版：编号的英文建议显示成大字（也兼容【标题】和（中文）行） */
 function renderHint(card, raw) {
   const body = card.querySelector(".card-body");
   body.replaceChildren();
@@ -406,6 +438,222 @@ els.askForm.addEventListener("submit", (e) => {
   if (!q) return;
   els.askInput.value = "";
   requestHint({ focus: q });
+});
+
+// ---------- 回顾：按时间顺序，一句对一句；再生成中文解释和关键词 ----------
+/** 回顾里生成的中文解释，key = 行的 key；sig 用来判断内容变了要重新生成 */
+const explainCache = new Map();
+
+/** 从 AI 的回答里取出每一句英文建议 */
+function suggestionsOf(raw) {
+  const out = [];
+  for (const rawLine of (raw || "").split("\n")) {
+    const line = rawLine.replace(/\*\*/g, "").trim();
+    if (!line || line.startsWith("[错误]")) continue;
+    out.push(line.replace(/^\d+[.、)]\s*/, ""));
+  }
+  return out;
+}
+
+/** 一句话可能生成过好几次提示（对方话变长了），取最后一次完整的 */
+function bestHintFor(lineId) {
+  const list = hintLog.filter((h) => h.lineId === lineId && h.raw);
+  return list.filter((h) => h.done).pop() || list.pop() || null;
+}
+
+function buildReviewRows() {
+  const rows = [];
+  const pushAsks = (afterLineId) => {
+    for (const h of hintLog) {
+      if (h.focus && h.afterLineId === afterLineId && h.raw) {
+        rows.push({ key: "H" + h.id, kind: "ask", them: h.focus, hint: h });
+      }
+    }
+  };
+  pushAsks(0);
+  for (const l of lines) {
+    const text = (l.text + " " + l.interim).trim();
+    if (text) {
+      if (l.speaker === "them") rows.push({ key: "L" + l.id, kind: "them", them: text, hint: bestHintFor(l.id) });
+      else rows.push({ key: "L" + l.id, kind: "me", them: text, hint: null });
+    }
+    pushAsks(l.id);
+  }
+  for (const r of rows) {
+    r.suggestions = r.hint ? suggestionsOf(r.hint.raw) : [];
+    r.sig = r.them + "\n" + r.suggestions.join("\n");
+  }
+  return rows;
+}
+
+function explanationFor(row) {
+  const e = explainCache.get(row.key);
+  return e && e.sig === row.sig ? e : null;
+}
+
+function renderReview() {
+  const rows = buildReviewRows();
+  els.reviewList.replaceChildren();
+  if (rows.length === 0) {
+    els.reviewList.innerHTML = '<p class="empty">还没有对话记录。</p>';
+    return rows;
+  }
+  for (const row of rows) {
+    const ex = row.kind === "me" ? null : explanationFor(row);
+    const el = document.createElement("div");
+    el.className = "rv-row" + (row.kind === "me" ? " me-row" : "");
+
+    const left = document.createElement("div");
+    const line = document.createElement("p");
+    line.className = "line " + (row.kind === "me" ? "me" : "them");
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = row.kind === "me" ? "我" : row.kind === "ask" ? "你问 AI" : "对方";
+    line.append(who, document.createTextNode(row.them));
+    if (ex?.meaning) {
+      const zh = document.createElement("div");
+      zh.className = "rv-zh";
+      zh.textContent = "中文：" + ex.meaning;
+      line.append(zh);
+    }
+    left.append(line);
+
+    const right = document.createElement("div");
+    right.className = "rv-hint";
+    if (row.kind !== "me") {
+      if (row.suggestions.length === 0) {
+        const none = document.createElement("div");
+        none.className = "none";
+        none.textContent = "（这句没有生成提示）";
+        right.append(none);
+      }
+      row.suggestions.forEach((en, i) => {
+        const say = document.createElement("div");
+        say.className = "say";
+        say.textContent = en;
+        right.append(say);
+        const zhText = ex?.suggestions?.[i];
+        if (zhText) {
+          const zh = document.createElement("div");
+          zh.className = "zh";
+          zh.textContent = zhText;
+          right.append(zh);
+        }
+      });
+      if (ex?.keywords?.length) {
+        const keys = document.createElement("div");
+        keys.className = "rv-keys";
+        for (const k of ex.keywords) {
+          const chip = document.createElement("span");
+          chip.textContent = `${k.en} — ${k.zh}`;
+          keys.append(chip);
+        }
+        right.append(keys);
+      }
+    }
+    el.append(left, right);
+    els.reviewList.append(el);
+  }
+  const need = rows.filter((r) => r.kind !== "me" && !explanationFor(r)).length;
+  const total = rows.filter((r) => r.kind !== "me").length;
+  if (!explaining) {
+    els.reviewProgress.textContent = total === 0 ? "" : need === 0 ? `已全部生成中文解释（${total} 句）` : `${total} 句，其中 ${need} 句还没有中文解释`;
+    els.explainBtn.disabled = need === 0;
+  }
+  return rows;
+}
+
+function showReview(on) {
+  els.review.hidden = !on;
+  els.panes.hidden = on;
+  els.reviewBtn.textContent = on ? "↩ 返回实时" : "📋 回顾";
+  if (on) {
+    closeLines();
+    renderReview();
+  }
+}
+els.reviewBtn.addEventListener("click", () => showReview(els.review.hidden));
+els.backBtn.addEventListener("click", () => showReview(false));
+
+let explaining = false;
+els.explainBtn.addEventListener("click", async () => {
+  const todo = renderReview().filter((r) => r.kind !== "me" && !explanationFor(r));
+  if (todo.length === 0) return;
+  explaining = true;
+  els.explainBtn.disabled = true;
+  let doneCount = 0;
+  let failed = 0;
+  els.reviewProgress.textContent = `正在生成中文解释… 0 / ${todo.length}`;
+
+  // 分批并行：每批 8 句，同时最多 3 批
+  const batches = [];
+  for (let i = 0; i < todo.length; i += 8) batches.push(todo.slice(i, i + 8));
+  let next = 0;
+  const worker = async () => {
+    while (next < batches.length) {
+      const batch = batches[next++];
+      try {
+        const res = await fetch("/api/explain", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            scene: els.scene.value,
+            items: batch.map((r) => ({ id: r.key, them: r.them, suggestions: r.suggestions })),
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+        for (const item of data.items || []) {
+          const row = batch.find((r) => r.key === item.id);
+          if (row) explainCache.set(row.key, { ...item, sig: row.sig });
+        }
+      } catch (err) {
+        failed += batch.length;
+        toast("有一部分中文解释没有生成：" + err.message, 8000);
+      }
+      doneCount += batch.length;
+      els.reviewProgress.textContent = `正在生成中文解释… ${doneCount} / ${todo.length}`;
+      renderReview();
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  explaining = false;
+  renderReview();
+  if (failed) els.reviewProgress.textContent += `（${failed} 句失败，可以再点一次按钮重试）`;
+});
+
+els.downloadBtn.addEventListener("click", () => {
+  const rows = buildReviewRows();
+  if (rows.length === 0) {
+    toast("还没有对话记录");
+    return;
+  }
+  const now = new Date();
+  const out = [`英语对话记录  ${now.toLocaleString()}`, ""];
+  for (const row of rows) {
+    const ex = row.kind === "me" ? null : explanationFor(row);
+    const who = row.kind === "me" ? "我" : row.kind === "ask" ? "你问 AI" : "对方";
+    out.push(`【${who}】${row.them}`);
+    if (ex?.meaning) out.push(`    中文：${ex.meaning}`);
+    if (row.suggestions.length) {
+      out.push("    AI 建议：");
+      row.suggestions.forEach((en, i) => {
+        out.push(`      ${i + 1}. ${en}`);
+        if (ex?.suggestions?.[i]) out.push(`         ${ex.suggestions[i]}`);
+      });
+    }
+    if (ex?.keywords?.length) out.push("    关键词：" + ex.keywords.map((k) => `${k.en} — ${k.zh}`).join("；"));
+    out.push("");
+  }
+  const blob = new Blob([out.join("\n")], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  const pad = (n) => String(n).padStart(2, "0");
+  a.download = `conversation-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.txt`;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
 
 // ---------- 语音识别：浏览器自带（Web Speech API） ----------

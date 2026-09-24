@@ -233,3 +233,47 @@ button.secondary { color: var(--accent); border-color: var(--accent); }
 
 .meter { width: 90px; height: 10px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); overflow: hidden; }
 .meter i { display: block; height: 100%; width: 0; background: var(--me); transition: width 80ms linear; }
+
+/* ---------- 回顾 ---------- */
+.review { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px; gap: 8px; }
+.review-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.review-head h2 { font-size: 16px; margin: 0 8px 0 0; }
+.review-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 0 14px;
+}
+.review-list {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.rv-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rv-row:last-child { border-bottom: none; }
+.rv-row .line { margin: 0; }
+.rv-row .rv-zh { color: var(--muted); font-size: 0.9em; margin-top: 6px; }
+.rv-row.me-row { grid-template-columns: 1fr 1fr; }
+.rv-hint .say { background: var(--suggest-bg); border-radius: 8px; padding: 6px 10px; margin: 0 0 2px; font-weight: 600; }
+.rv-hint .zh { color: var(--muted); font-size: 0.9em; margin: 0 0 6px 10px; }
+.rv-hint .none { color: var(--muted); font-size: 0.9em; }
+.rv-keys { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+.rv-keys span {
+  font-size: 0.85em;
+  border: 1px solid var(--suggest-border);
+  background: var(--suggest-bg);
+  border-radius: 999px;
+  padding: 1px 10px;
+}
+.rv-ask { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 4px; }
+@media (max-width: 800px) {
+  .rv-row, .review-cols { grid-template-columns: 1fr; }
+}

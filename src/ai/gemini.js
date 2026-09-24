@@ -1,10 +1,14 @@
-// Gemini：根据对话记录生成文字提示（流式返回）。
+// Gemini：通话中流式生成英文提示；通话后生成中文解释（JSON）。
 import { ApiError, GoogleGenAI } from "@google/genai";
 
 // flash 系列速度快，适合实时对话；可以在 .env 里用 GEMINI_MODEL 换别的模型
 const MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
 // 思考越少出结果越快：minimal / low / medium / high；填 off 表示不设置
-let thinkingLevel = (process.env.GEMINI_THINKING || "low").toUpperCase();
+// 通话中默认 minimal（最快）；通话后的中文解释不赶时间，用 low
+const LIVE_THINKING = (process.env.GEMINI_THINKING || "minimal").toUpperCase();
+const REVIEW_THINKING = "LOW";
+// 模型不接受 thinkingLevel 时记下来，以后不再设置
+let thinkingSupported = true;
 
 let ai;
 function getClient() {
@@ -18,42 +22,66 @@ export function enabled() {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
-export async function stream({ system, userMessage, onText, signal }) {
-  let sentAny = false;
-  const run = async () => {
-    const config = {
-      systemInstruction: system,
-      maxOutputTokens: 4000, // 包含思考用的 token，面试回答也比较长
-      abortSignal: signal,
-    };
-    if (thinkingLevel !== "OFF") config.thinkingConfig = { thinkingLevel };
+function buildConfig({ system, signal, level, extra }) {
+  const config = { systemInstruction: system, abortSignal: signal, ...extra };
+  if (thinkingSupported && level !== "OFF") config.thinkingConfig = { thinkingLevel: level };
+  return config;
+}
 
-    const response = await getClient().models.generateContentStream({
-      model: MODEL,
-      contents: [{ role: "user", parts: [{ text: userMessage }] }],
-      config,
-    });
-    for await (const chunk of response) {
-      const text = chunk.text;
-      if (text) {
-        sentAny = true;
-        onText(text);
-      }
-    }
-  };
-
+/** 有的模型不支持 thinkingLevel：去掉这个设置再试一次 */
+async function withThinkingFallback(run, canRetry) {
   try {
-    await run();
+    return await run();
   } catch (err) {
-    // 有的模型不支持 thinkingLevel：去掉这个设置再试一次，以后也不再设置
-    if (!sentAny && thinkingLevel !== "OFF" && err instanceof ApiError && err.status === 400) {
-      console.warn(`模型 ${MODEL} 不接受 thinkingLevel=${thinkingLevel}，改为不设置：`, err.message);
-      thinkingLevel = "OFF";
-      await run();
-      return;
+    if (thinkingSupported && canRetry() && err instanceof ApiError && err.status === 400) {
+      console.warn(`模型 ${MODEL} 不接受 thinkingLevel，改为不设置：`, err.message);
+      thinkingSupported = false;
+      return await run();
     }
     throw err;
   }
+}
+
+export async function stream({ system, userMessage, onText, signal }) {
+  let sentAny = false;
+  await withThinkingFallback(
+    async () => {
+      const response = await getClient().models.generateContentStream({
+        model: MODEL,
+        contents: [{ role: "user", parts: [{ text: userMessage }] }],
+        // 包含思考用的 token，面试回答也比较长
+        config: buildConfig({ system, signal, level: LIVE_THINKING, extra: { maxOutputTokens: 3000 } }),
+      });
+      for await (const chunk of response) {
+        const text = chunk.text;
+        if (text) {
+          sentAny = true;
+          onText(text);
+        }
+      }
+    },
+    () => !sentAny,
+  );
+}
+
+/** 返回按 schema 解析好的 JSON 对象 */
+export async function json({ system, userMessage, schema, signal }) {
+  return withThinkingFallback(
+    async () => {
+      const response = await getClient().models.generateContent({
+        model: MODEL,
+        contents: [{ role: "user", parts: [{ text: userMessage }] }],
+        config: buildConfig({
+          system,
+          signal,
+          level: REVIEW_THINKING,
+          extra: { maxOutputTokens: 16000, responseMimeType: "application/json", responseJsonSchema: schema },
+        }),
+      });
+      return JSON.parse(response.text ?? "");
+    },
+    () => true,
+  );
 }
 
 export function describeError(err) {

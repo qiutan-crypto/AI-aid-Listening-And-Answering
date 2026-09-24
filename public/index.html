@@ -18,6 +18,7 @@
     <button id="fontUp" class="ghost" title="字体变大">A+</button>
     <button id="settingsBtn" class="ghost">设置</button>
     <button id="clearBtn" class="ghost">清空</button>
+    <button id="reviewBtn" class="ghost" title="通话结束后，按时间顺序回顾，并生成中文解释">📋 回顾</button>
     <button id="startBtn" class="primary">▶ 开始听</button>
   </header>
 
@@ -80,7 +81,7 @@
     <p class="note" id="engineNote"></p>
   </section>
 
-  <main class="panes">
+  <main id="panes" class="panes">
     <section class="pane">
       <div class="pane-head">
         <h2>字幕 · 英文原文</h2>
@@ -107,6 +108,19 @@
         <button type="submit" class="secondary">问 AI</button>
       </form>
     </section>
+  </main>
+
+  <main id="review" class="review" hidden>
+    <div class="review-head">
+      <h2>对话回顾 · 按时间先后</h2>
+      <span id="reviewProgress" class="note"></span>
+      <div class="spacer"></div>
+      <button id="explainBtn" class="primary">生成中文解释和关键词</button>
+      <button id="downloadBtn" class="ghost">下载记录</button>
+      <button id="backBtn" class="ghost">↩ 返回实时</button>
+    </div>
+    <div class="review-cols"><span>对方说的话（和我说的话）</span><span>AI 当时给的建议</span></div>
+    <div id="reviewList" class="scroll review-list"></div>
   </main>
 
   <div id="toast" class="toast" hidden></div>

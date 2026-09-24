@@ -5,7 +5,7 @@ import express from "express";
 import { WebSocketServer } from "ws";
 import { bridgeToDeepgram, deepgramEnabled } from "./src/deepgram.js";
 import { addDoc, deleteDoc, DocError, listDocs, MAX_TOTAL_CHARS, updateDoc } from "./src/docs.js";
-import { activeProvider, describeError, streamHint } from "./src/hint.js";
+import { activeProvider, describeError, explainItems, streamHint } from "./src/hint.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -58,6 +58,31 @@ app.post("/api/hint", async (req, res) => {
     }
   }
   res.end();
+});
+
+// 通话结束后的回顾：一次最多解释 20 句，前端会分批发
+app.post("/api/explain", async (req, res) => {
+  const { scene, items } = req.body ?? {};
+  if (!Array.isArray(items) || items.length === 0 || items.length > 20) {
+    res.status(400).json({ error: "items 必须是 1~20 条" });
+    return;
+  }
+  const clean = items.map((it) => ({
+    id: String(it?.id ?? ""),
+    them: String(it?.them ?? "").slice(0, 4000),
+    suggestions: (Array.isArray(it?.suggestions) ? it.suggestions : []).map((x) => String(x).slice(0, 1000)).slice(0, 10),
+  }));
+  const controller = new AbortController();
+  res.on("close", () => {
+    if (!res.writableFinished) controller.abort();
+  });
+  try {
+    res.json({ items: await explainItems({ scene, items: clean, signal: controller.signal }) });
+  } catch (err) {
+    if (controller.signal.aborted) return;
+    console.error("explain error:", err);
+    res.status(502).json({ error: describeError(err) });
+  }
 });
 
 // ---------- 我的资料 ----------
