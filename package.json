@@ -1,0 +1,19 @@
+{
+  "name": "ai-aid-listening-and-answering",
+  "version": "0.1.0",
+  "description": "英语对话辅助：实时英文字幕 + AI 回答提示",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "check": "node --check server.js && node --check src/hint.js && node --check src/deepgram.js && node --check public/app.js && node --check public/pcm-worklet.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}

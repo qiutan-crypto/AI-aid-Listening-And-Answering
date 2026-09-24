@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>英语对话助手</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E💬%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>英语对话助手</h1>
+    <span id="status" class="status idle">未开始</span>
+    <div class="spacer"></div>
+    <button id="fontDown" class="ghost" title="字体变小">A−</button>
+    <button id="fontUp" class="ghost" title="字体变大">A+</button>
+    <button id="settingsBtn" class="ghost">设置</button>
+    <button id="clearBtn" class="ghost">清空</button>
+    <button id="startBtn" class="primary">▶ 开始听</button>
+  </header>
+
+  <section id="settings" class="settings" hidden>
+    <div class="row">
+      <label>语音识别</label>
+      <select id="engine">
+        <option value="browser">浏览器自带（免费，只能用 Chrome/Edge 麦克风）</option>
+        <option value="deepgram">Deepgram（更准，可以听电脑里的声音）</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>对方的声音从哪来</label>
+      <select id="source">
+        <option value="mic">麦克风（手机外放 / 面对面说话）</option>
+        <option value="system">电脑声音（Zoom / Teams / 网页电话，需 Deepgram）</option>
+      </select>
+    </div>
+    <div class="row" id="meMicRow">
+      <label>我说的话</label>
+      <label class="check"><input type="checkbox" id="meMic" checked /> 同时用麦克风识别我说的话</label>
+    </div>
+    <div class="row">
+      <label>自动提示</label>
+      <label class="check"><input type="checkbox" id="autoHint" checked /> 对方说完一句话后自动给出回答建议</label>
+    </div>
+    <div class="row column">
+      <label for="context">背景信息（让 AI 更懂你的情况，可以用中文写）</label>
+      <textarea id="context" rows="3" placeholder="例如：我是一家小会计公司的老板，这通电话是客户问报税进度。我的名字叫 Qiu。"></textarea>
+    </div>
+    <p class="note" id="engineNote"></p>
+  </section>
+
+  <main class="panes">
+    <section class="pane">
+      <div class="pane-head">
+        <h2>字幕 · 英文原文</h2>
+        <span class="legend"><i class="dot them"></i>对方 <i class="dot me"></i>我</span>
+      </div>
+      <div id="transcript" class="scroll transcript">
+        <p class="empty">点右上角「开始听」，对方说的英文会显示在这里。</p>
+      </div>
+      <div class="pane-foot">
+        <button id="holdMe" class="hold" title="按住时识别到的话标记为「我」">按住 = 我在说话（或按住空格）</button>
+        <button id="hintNow" class="secondary">现在给提示</button>
+      </div>
+    </section>
+
+    <section class="pane">
+      <div class="pane-head">
+        <h2>AI 提示 · 可以这样回答</h2>
+      </div>
+      <div id="hints" class="scroll hints">
+        <p class="empty">对方说完一句话，AI 会在这里告诉你意思和建议的回答。最新的在最上面。</p>
+      </div>
+      <form id="askForm" class="pane-foot">
+        <input id="askInput" type="text" placeholder="也可以直接问 AI，例如：我想说下周五之前交文件，英文怎么说？" />
+        <button type="submit" class="secondary">问 AI</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
