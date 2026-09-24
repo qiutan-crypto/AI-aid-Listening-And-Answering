@@ -11,6 +11,15 @@ const els = {
   fontUp: $("fontUp"),
   fontDown: $("fontDown"),
   engine: $("engine"),
+  scene: $("scene"),
+  sceneBadge: $("sceneBadge"),
+  docList: $("docList"),
+  docFile: $("docFile"),
+  pasteToggle: $("pasteToggle"),
+  pasteBox: $("pasteBox"),
+  pasteName: $("pasteName"),
+  pasteText: $("pasteText"),
+  pasteSave: $("pasteSave"),
   source: $("source"),
   meMic: $("meMic"),
   meMicRow: $("meMicRow"),
@@ -53,6 +62,7 @@ function applyFontSize() {
 
 function loadSettings() {
   // 服务器配置了 Deepgram 就默认用它
+  els.scene.value = store.get("scene", "general");
   els.engine.value = store.get("engine", serverConfig.deepgram ? "deepgram" : "browser");
   els.source.value = store.get("source", "mic");
   els.meMic.checked = store.get("meMic", true);
@@ -63,6 +73,7 @@ function loadSettings() {
 }
 
 function saveSettings() {
+  store.set("scene", els.scene.value);
   store.set("engine", els.engine.value);
   store.set("source", els.source.value);
   store.set("meMic", els.meMic.checked);
@@ -71,6 +82,7 @@ function saveSettings() {
 }
 
 function updateSettingsUi() {
+  updateSceneBadge();
   const deepgram = els.engine.value === "deepgram";
   const system = els.source.value === "system";
   els.meMicRow.hidden = !system;
@@ -93,7 +105,7 @@ function updateSettingsUi() {
   els.engineNote.textContent = notes.join(" ");
 }
 
-for (const el of [els.engine, els.source, els.meMic, els.autoHint]) {
+for (const el of [els.scene, els.engine, els.source, els.meMic, els.autoHint]) {
   el.addEventListener("change", () => {
     saveSettings();
     updateSettingsUi();
@@ -286,7 +298,7 @@ async function requestHint({ auto = false, focus = "" } = {}) {
     const res = await fetch("/api/hint", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ context: els.context.value, transcript: transcriptForAi(), focus }),
+      body: JSON.stringify({ context: els.context.value, transcript: transcriptForAi(), focus, scene: els.scene.value }),
       signal: controller.signal,
     });
     if (!res.ok || !res.body) throw new Error(await res.text() || "HTTP " + res.status);
@@ -584,6 +596,145 @@ function stopListening() {
 
 els.startBtn.addEventListener("click", () => (listening ? stopListening() : startListening()));
 
+// ---------- 我的资料 ----------
+let docs = [];
+
+function updateSceneBadge() {
+  const n = docs.filter((d) => d.enabled).length;
+  const scene = els.scene.value === "interview" ? "面试模式" : "一般对话";
+  els.sceneBadge.textContent = scene + " · " + (n ? `参考资料 ${n} 份` : "无资料，用一般知识");
+}
+
+function formatChars(n) {
+  return n >= 1000 ? (n / 1000).toFixed(1) + "k 字符" : n + " 字符";
+}
+
+function renderDocs() {
+  els.docList.replaceChildren();
+  if (docs.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty-docs";
+    li.textContent = "还没有资料。面试前可以上传简历和职位描述（JD）。";
+    els.docList.append(li);
+  }
+  for (const d of docs) {
+    const li = document.createElement("li");
+    li.className = d.enabled ? "" : "off";
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = d.enabled;
+    check.title = "勾选 = AI 回答时参考这份资料";
+    check.addEventListener("change", () => setDocEnabled(d, check.checked));
+
+    const name = document.createElement("span");
+    name.className = "doc-name";
+    name.textContent = d.name;
+    name.title = d.preview + (d.chars > d.preview.length ? "…" : "");
+
+    const meta = document.createElement("span");
+    meta.className = "doc-meta";
+    meta.textContent = formatChars(d.chars);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ghost";
+    del.textContent = "删除";
+    del.addEventListener("click", () => removeDoc(d));
+
+    li.append(check, name, meta, del);
+    els.docList.append(li);
+  }
+  updateSceneBadge();
+}
+
+async function docApi(url, options) {
+  const res = await fetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+  return data;
+}
+
+async function loadDocs() {
+  try {
+    docs = (await docApi("/api/docs")).docs;
+  } catch (err) {
+    toast("读取资料失败：" + err.message);
+  }
+  renderDocs();
+}
+
+async function uploadFiles(files) {
+  for (const file of files) {
+    toast(`正在读取「${file.name}」…`, 60000);
+    try {
+      await docApi("/api/docs?name=" + encodeURIComponent(file.name), {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+      });
+      toast(`已添加「${file.name}」`);
+    } catch (err) {
+      toast(err.message, 10000);
+    }
+  }
+  await loadDocs();
+}
+
+async function setDocEnabled(d, enabled) {
+  try {
+    await docApi("/api/docs/" + d.id, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+  } catch (err) {
+    toast(err.message, 8000);
+  }
+  await loadDocs();
+}
+
+async function removeDoc(d) {
+  if (!confirm(`删除资料「${d.name}」？`)) return;
+  try {
+    await docApi("/api/docs/" + d.id, { method: "DELETE" });
+  } catch (err) {
+    toast(err.message);
+  }
+  await loadDocs();
+}
+
+els.docFile.addEventListener("change", () => {
+  const files = [...els.docFile.files];
+  els.docFile.value = "";
+  if (files.length) uploadFiles(files);
+});
+els.pasteToggle.addEventListener("click", () => {
+  els.pasteBox.hidden = !els.pasteBox.hidden;
+  if (!els.pasteBox.hidden) els.pasteName.focus();
+});
+els.pasteSave.addEventListener("click", async () => {
+  const text = els.pasteText.value.trim();
+  if (!text) {
+    toast("请先粘贴文字");
+    return;
+  }
+  try {
+    await docApi("/api/docs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: els.pasteName.value.trim() || "粘贴的资料", text }),
+    });
+    els.pasteName.value = "";
+    els.pasteText.value = "";
+    els.pasteBox.hidden = true;
+    toast("已保存");
+  } catch (err) {
+    toast(err.message, 8000);
+  }
+  await loadDocs();
+});
+
 // ---------- 初始化 ----------
 fetch("/api/config")
   .then((r) => r.json())
@@ -591,5 +742,6 @@ fetch("/api/config")
   .catch(() => toast("连不上本机服务器，请确认已经运行 npm start。"))
   .finally(() => {
     loadSettings();
+    loadDocs();
     if (!els.context.value) els.settings.hidden = false;
   });

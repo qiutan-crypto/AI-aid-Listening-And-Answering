@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { bridgeToDeepgram, deepgramEnabled } from "./src/deepgram.js";
+import { addDoc, deleteDoc, DocError, listDocs, MAX_TOTAL_CHARS, updateDoc } from "./src/docs.js";
 import { activeProvider, describeError, streamHint } from "./src/hint.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -12,7 +13,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "127.0.0.1";
 
 const app = express();
-app.use(express.json({ limit: "200kb" }));
+app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(here, "public")));
 
 app.get("/api/config", (_req, res) => {
@@ -23,7 +24,7 @@ app.get("/api/config", (_req, res) => {
 });
 
 app.post("/api/hint", async (req, res) => {
-  const { context, transcript, focus } = req.body ?? {};
+  const { context, transcript, focus, scene } = req.body ?? {};
   if (!Array.isArray(transcript)) {
     res.status(400).type("text/plain").send("transcript 必须是数组");
     return;
@@ -46,6 +47,7 @@ app.post("/api/hint", async (req, res) => {
       context,
       transcript: transcript.slice(-30),
       focus,
+      scene,
       signal: controller.signal,
       onText: (t) => res.write(t),
     });
@@ -57,6 +59,48 @@ app.post("/api/hint", async (req, res) => {
   }
   res.end();
 });
+
+// ---------- 我的资料 ----------
+function docRoute(handler) {
+  return async (req, res) => {
+    try {
+      await handler(req, res);
+    } catch (err) {
+      if (err instanceof DocError) {
+        res.status(400).json({ error: err.message });
+      } else {
+        console.error("docs error:", err);
+        res.status(500).json({ error: "处理资料时出错：" + (err?.message || err) });
+      }
+    }
+  };
+}
+
+app.get("/api/docs", docRoute(async (_req, res) => {
+  res.json({ docs: await listDocs(), maxTotalChars: MAX_TOTAL_CHARS });
+}));
+
+// 上传文件：请求体是文件原始内容，文件名放在 ?name= 里；粘贴文字：JSON {name, text}
+app.post(
+  "/api/docs",
+  express.raw({ type: (req) => !req.headers["content-type"]?.startsWith("application/json"), limit: "20mb" }),
+  docRoute(async (req, res) => {
+    const doc = Buffer.isBuffer(req.body)
+      ? await addDoc({ name: String(req.query.name || ""), buf: req.body })
+      : await addDoc({ name: req.body?.name, text: String(req.body?.text ?? "") });
+    res.json({ doc });
+  }),
+);
+
+app.patch("/api/docs/:id", docRoute(async (req, res) => {
+  await updateDoc(req.params.id, { enabled: req.body?.enabled });
+  res.json({ ok: true });
+}));
+
+app.delete("/api/docs/:id", docRoute(async (req, res) => {
+  await deleteDoc(req.params.id);
+  res.json({ ok: true });
+}));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws/stt" });

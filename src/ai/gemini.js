@@ -1,6 +1,5 @@
 // Gemini：根据对话记录生成文字提示（流式返回）。
 import { ApiError, GoogleGenAI } from "@google/genai";
-import { SYSTEM_PROMPT } from "../prompt.js";
 
 // flash 系列速度快，适合实时对话；可以在 .env 里用 GEMINI_MODEL 换别的模型
 const MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
@@ -19,12 +18,12 @@ export function enabled() {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
-export async function stream({ userMessage, onText, signal }) {
+export async function stream({ system, userMessage, onText, signal }) {
   let sentAny = false;
   const run = async () => {
     const config = {
-      systemInstruction: SYSTEM_PROMPT,
-      maxOutputTokens: 2000,
+      systemInstruction: system,
+      maxOutputTokens: 4000, // 包含思考用的 token，面试回答也比较长
       abortSignal: signal,
     };
     if (thinkingLevel !== "OFF") config.thinkingConfig = { thinkingLevel };

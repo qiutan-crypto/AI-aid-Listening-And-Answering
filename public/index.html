@@ -11,6 +11,7 @@
   <header class="topbar">
     <h1>英语对话助手</h1>
     <span id="status" class="status idle">未开始</span>
+    <span id="sceneBadge" class="scene-badge" title="在「设置」里切换场景、管理资料"></span>
     <div class="spacer"></div>
     <button id="fontDown" class="ghost" title="字体变小">A−</button>
     <button id="fontUp" class="ghost" title="字体变大">A+</button>
@@ -20,6 +21,13 @@
   </header>
 
   <section id="settings" class="settings" hidden>
+    <div class="row">
+      <label>场景</label>
+      <select id="scene">
+        <option value="general">一般对话（电话、聊天、开会）</option>
+        <option value="interview">面试（我是应聘者，按我的资料回答）</option>
+      </select>
+    </div>
     <div class="row">
       <label>语音识别</label>
       <select id="engine">
@@ -45,6 +53,23 @@
     <div class="row column">
       <label for="context">背景信息（让 AI 更懂你的情况，可以用中文写）</label>
       <textarea id="context" rows="3" placeholder="例如：我是一家小会计公司的老板，这通电话是客户问报税进度。我的名字叫 Qiu。"></textarea>
+    </div>
+    <div class="row column docs">
+      <label>我的资料（简历、项目经历、职位描述等，AI 回答时会参考；没有资料就按一般知识回答）</label>
+      <ul id="docList" class="doc-list"></ul>
+      <div class="doc-actions">
+        <label class="upload-btn">
+          ＋ 上传文件
+          <input id="docFile" type="file" multiple accept=".pdf,.docx,.txt,.md,.markdown,.csv,.json" hidden />
+        </label>
+        <button id="pasteToggle" type="button" class="ghost">＋ 粘贴文字</button>
+        <span class="note">支持 PDF、Word（.docx）、TXT、Markdown。资料只保存在你自己电脑的 data 文件夹里。</span>
+      </div>
+      <div id="pasteBox" class="paste-box" hidden>
+        <input id="pasteName" type="text" placeholder="资料名称，例如：我的项目经历" />
+        <textarea id="pasteText" rows="5" placeholder="把文字粘贴到这里，中文英文都可以"></textarea>
+        <div><button id="pasteSave" type="button" class="secondary">保存这份资料</button></div>
+      </div>
     </div>
     <p class="note" id="engineNote"></p>
   </section>

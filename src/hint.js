@@ -1,7 +1,8 @@
 // 生成「怎么回答」的提示：优先用 Gemini（填了 GEMINI_API_KEY），否则用 Claude。
 import * as claude from "./ai/claude.js";
 import * as gemini from "./ai/gemini.js";
-import { buildUserMessage } from "./prompt.js";
+import { enabledDocs } from "./docs.js";
+import { buildSystemPrompt, buildUserMessage } from "./prompt.js";
 
 const providers = [gemini, claude];
 
@@ -14,13 +15,16 @@ export function activeProvider() {
  * @param {string} [opts.context]
  * @param {{speaker: "me"|"them", text: string}[]} opts.transcript
  * @param {string} [opts.focus]
+ * @param {"general"|"interview"} [opts.scene]
  * @param {(text: string) => void} opts.onText
  * @param {AbortSignal} [opts.signal]
  */
-export async function streamHint({ context, transcript, focus, onText, signal }) {
+export async function streamHint({ context, transcript, focus, scene, onText, signal }) {
   const provider = activeProvider();
   if (!provider) throw new Error("没有配置 AI 的 API Key，请在 .env 里填写 GEMINI_API_KEY 后重启");
-  await provider.stream({ userMessage: buildUserMessage({ context, transcript, focus }), onText, signal });
+  // 资料放在 system prompt 里：内容不变时 AI 服务端可以缓存，后面的请求更快、更便宜
+  const system = buildSystemPrompt({ scene: scene === "interview" ? "interview" : "general", docs: await enabledDocs() });
+  await provider.stream({ system, userMessage: buildUserMessage({ context, transcript, focus }), onText, signal });
 }
 
 export function describeError(err) {

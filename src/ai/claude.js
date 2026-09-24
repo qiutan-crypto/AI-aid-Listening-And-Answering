@@ -1,6 +1,5 @@
 // Claude：根据对话记录生成文字提示（流式返回）。没有填 GEMINI_API_KEY 时使用。
 import Anthropic from "@anthropic-ai/sdk";
-import { SYSTEM_PROMPT } from "../prompt.js";
 
 const MODEL = process.env.HINT_MODEL || "claude-opus-5";
 // low = 最快出结果；需要更深入的建议可以在 .env 里改成 medium / high
@@ -18,15 +17,15 @@ export function enabled() {
   return Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 }
 
-export async function stream({ userMessage, onText, signal }) {
+export async function stream({ system, userMessage, onText, signal }) {
   const s = getClient().beta.messages.stream(
     {
       model: MODEL,
-      max_tokens: 2000,
+      max_tokens: 4000,
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       output_config: { effort: EFFORT },
-      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: userMessage }],
     },
     { signal },
