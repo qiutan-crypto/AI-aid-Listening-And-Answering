@@ -12,6 +12,9 @@ const els = {
   fontDown: $("fontDown"),
   engine: $("engine"),
   scene: $("scene"),
+  micDevice: $("micDevice"),
+  micRefresh: $("micRefresh"),
+  meter: $("meter"),
   sceneBadge: $("sceneBadge"),
   docList: $("docList"),
   docFile: $("docFile"),
@@ -74,6 +77,7 @@ function loadSettings() {
 
 function saveSettings() {
   store.set("scene", els.scene.value);
+  store.set("micDevice", els.micDevice.value);
   store.set("engine", els.engine.value);
   store.set("source", els.source.value);
   store.set("meMic", els.meMic.checked);
@@ -96,6 +100,7 @@ function updateSettingsUi() {
   if (!deepgram && !("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
     notes.push("⚠️ 这个浏览器不支持自带语音识别，请用 Chrome 或 Edge，或改用 Deepgram。");
   }
+  if (!deepgram) notes.push("浏览器自带识别总是使用 Mac 系统设置里的默认麦克风，上面的麦克风选择只对 Deepgram 有效。");
   if (!system) {
     notes.push("只有一个麦克风时，程序分不清是谁在说话：默认都算「对方」，你自己说话时请按住空格或下面的按钮。");
   } else if (system) {
@@ -105,7 +110,7 @@ function updateSettingsUi() {
   els.engineNote.textContent = notes.join(" ");
 }
 
-for (const el of [els.scene, els.engine, els.source, els.meMic, els.autoHint]) {
+for (const el of [els.scene, els.micDevice, els.engine, els.source, els.meMic, els.autoHint]) {
   el.addEventListener("change", () => {
     saveSettings();
     updateSettingsUi();
@@ -217,7 +222,15 @@ function closeLines(speaker) {
 /** 收到一段识别结果 */
 function onSpeech(speaker, text, isFinal) {
   text = (text || "").trim();
-  if (!text && !isFinal) return;
+  // 安静的时候 Deepgram 也会发来空结果：没有文字就不新建一行
+  if (!text) {
+    const last = lines[lines.length - 1];
+    if (isFinal && last && !last.closed && last.speaker === speaker && last.interim) {
+      last.interim = "";
+      renderLine(last);
+    }
+    return;
+  }
   const line = openLine(speaker);
   if (isFinal) {
     if (text) line.text = (line.text + " " + text).trim();
@@ -498,13 +511,17 @@ class DeepgramStream {
     const src = this.ctx.createMediaStreamSource(this.media);
     this.node = new AudioWorkletNode(this.ctx, "pcm-downsampler");
     this.node.port.onmessage = (ev) => {
-      if (this.ws.readyState === WebSocket.OPEN) this.ws.send(ev.data);
+      const { audio, peak } = ev.data;
+      audioLevel.report(this, peak);
+      if (this.ws.readyState === WebSocket.OPEN) this.ws.send(audio);
     };
     src.connect(this.node);
     // 不连到扬声器，避免回声；有些浏览器要求节点连接到 destination 才会运行，用静音增益
     const mute = this.ctx.createGain();
     mute.gain.value = 0;
     this.node.connect(mute).connect(this.ctx.destination);
+    // 等待授权弹窗后，AudioContext 可能处于暂停状态，不恢复就收不到声音
+    if (this.ctx.state !== "running") await this.ctx.resume();
   }
 
   endUtterance() {
@@ -519,16 +536,82 @@ class DeepgramStream {
   }
 }
 
+// ---------- 麦克风选择 ----------
+async function loadMicDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  const saved = store.get("micDevice", "");
+  let devices = [];
+  try {
+    devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput" && d.deviceId !== "default");
+  } catch {}
+  els.micDevice.replaceChildren(new Option("系统默认麦克风", ""));
+  devices.forEach((d, i) => els.micDevice.append(new Option(d.label || `麦克风 ${i + 1}（点「开始听」授权后显示名字）`, d.deviceId)));
+  els.micDevice.value = devices.some((d) => d.deviceId === saved) ? saved : "";
+}
+els.micRefresh.addEventListener("click", loadMicDevices);
+navigator.mediaDevices?.addEventListener?.("devicechange", loadMicDevices);
+
+// ---------- 音量条 + 没声音提醒 ----------
+const audioLevel = {
+  peaks: new Map(),
+  loudAt: 0,
+  startedAt: 0,
+  warned: false,
+  timer: null,
+  report(stream, peak) {
+    this.peaks.set(stream, peak);
+    if (peak > 0.02) this.loudAt = Date.now();
+    const max = Math.max(...this.peaks.values());
+    // 平方根让小声也能看出来
+    els.meter.firstElementChild.style.width = Math.min(100, Math.sqrt(max) * 140) + "%";
+  },
+  start() {
+    this.reset();
+    this.startedAt = Date.now();
+    els.meter.hidden = false;
+    this.timer = setInterval(() => {
+      const quietFor = Date.now() - Math.max(this.loudAt, this.startedAt);
+      if (!this.warned && quietFor > 10000) {
+        this.warned = true;
+        toast(
+          this.peaks.size === 0
+            ? "10 秒没有收到任何声音数据。请重新点「停止」再「开始听」，或刷新页面。"
+            : "10 秒几乎没有收到声音（音量条不动）。请在「设置」里换一个麦克风，并检查 Mac「系统设置 → 隐私与安全性 → 麦克风」里是否允许了 Chrome。",
+          12000,
+        );
+      }
+    }, 1000);
+  },
+  reset() {
+    clearInterval(this.timer);
+    this.peaks.clear();
+    this.loudAt = 0;
+    this.warned = false;
+    els.meter.hidden = true;
+    els.meter.firstElementChild.style.width = "0";
+  },
+};
+
 // ---------- 开始 / 停止 ----------
 let listening = false;
 let recognizers = [];
 let mediaStreams = [];
 
 async function getMic() {
+  const deviceId = els.micDevice.value;
   const s = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+    },
   });
   mediaStreams.push(s);
+  // 授权以后才能看到麦克风的名字
+  loadMicDevices();
+  const label = s.getAudioTracks()[0]?.label;
+  if (label) console.log("使用麦克风：", label);
   return s;
 }
 
@@ -570,6 +653,7 @@ async function startListening() {
     }
     for (const r of recognizers) await r.start();
     listening = true;
+    if (engine === "deepgram") audioLevel.start();
     els.startBtn.textContent = "■ 停止";
     els.startBtn.classList.add("running");
     setStatus("正在听", "live");
@@ -588,6 +672,7 @@ function stopListening() {
   recognizers = [];
   for (const s of mediaStreams) for (const t of s.getTracks()) t.stop();
   mediaStreams = [];
+  audioLevel.reset();
   closeLines();
   els.startBtn.textContent = "▶ 开始听";
   els.startBtn.classList.remove("running");
@@ -743,5 +828,6 @@ fetch("/api/config")
   .finally(() => {
     loadSettings();
     loadDocs();
+    loadMicDevices();
     if (!els.context.value) els.settings.hidden = false;
   });

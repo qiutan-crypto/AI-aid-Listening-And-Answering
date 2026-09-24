@@ -230,3 +230,6 @@ button.secondary { color: var(--accent); border-color: var(--accent); }
   max-width: 90vw;
   font-size: 14px;
 }
+
+.meter { width: 90px; height: 10px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); overflow: hidden; }
+.meter i { display: block; height: 100%; width: 0; background: var(--me); transition: width 80ms linear; }

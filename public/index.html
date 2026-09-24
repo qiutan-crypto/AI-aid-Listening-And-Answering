@@ -11,6 +11,7 @@
   <header class="topbar">
     <h1>英语对话助手</h1>
     <span id="status" class="status idle">未开始</span>
+    <span id="meter" class="meter" title="收到的声音大小：说话时应该跳动" hidden><i></i></span>
     <span id="sceneBadge" class="scene-badge" title="在「设置」里切换场景、管理资料"></span>
     <div class="spacer"></div>
     <button id="fontDown" class="ghost" title="字体变小">A−</button>
@@ -41,6 +42,11 @@
         <option value="mic">麦克风（手机外放 / 面对面说话）</option>
         <option value="system">电脑声音（Zoom / Teams / 网页电话，需 Deepgram）</option>
       </select>
+    </div>
+    <div class="row">
+      <label>麦克风</label>
+      <select id="micDevice"><option value="">系统默认麦克风</option></select>
+      <button id="micRefresh" type="button" class="ghost" title="重新读取麦克风列表">刷新</button>
     </div>
     <div class="row" id="meMicRow">
       <label>我说的话</label>

@@ -2,7 +2,7 @@
 // 再把识别结果转成简单的 JSON 发回浏览器。API Key 只留在服务器端。
 import WebSocket from "ws";
 
-const DEEPGRAM_URL = "wss://api.deepgram.com/v1/listen";
+const DEEPGRAM_URL = process.env.DEEPGRAM_URL || "wss://api.deepgram.com/v1/listen";
 
 export function deepgramEnabled() {
   return Boolean(process.env.DEEPGRAM_API_KEY);
@@ -39,7 +39,13 @@ export function bridgeToDeepgram(browser) {
     }
   }, 5000);
 
+  let audioBytes = 0;
+  const statsTimer = setInterval(() => {
+    if (audioBytes === 0) console.log("[Deepgram] 还没有收到浏览器发来的声音");
+  }, 15000);
+
   upstream.on("open", () => {
+    console.log("[Deepgram] 已连接，开始识别");
     for (const chunk of pending.splice(0)) upstream.send(chunk);
     sendToBrowser({ type: "ready" });
   });
@@ -53,6 +59,8 @@ export function bridgeToDeepgram(browser) {
     }
     if (msg.type === "Results") {
       const text = msg.channel?.alternatives?.[0]?.transcript ?? "";
+      // 在终端里也显示识别结果，方便排查
+      if (msg.is_final && text) console.log("[识别]", text);
       sendToBrowser({
         type: "transcript",
         text,
@@ -65,25 +73,30 @@ export function bridgeToDeepgram(browser) {
   });
 
   upstream.on("unexpected-response", (_req, res) => {
+    console.log(`[Deepgram] 连接被拒绝 (HTTP ${res.statusCode})，请检查 DEEPGRAM_API_KEY`);
     sendToBrowser({ type: "error", message: `Deepgram 连接失败 (HTTP ${res.statusCode})，请检查 DEEPGRAM_API_KEY` });
     browser.close();
   });
   upstream.on("error", (err) => {
     sendToBrowser({ type: "error", message: `Deepgram 错误: ${err.message}` });
   });
-  upstream.on("close", () => {
+  upstream.on("close", (code, reason) => {
     clearInterval(keepAlive);
+    clearInterval(statsTimer);
+    console.log(`[Deepgram] 连接关闭 (${code}${reason?.length ? " " + reason : ""})，共收到声音 ${Math.round(audioBytes / 32000)} 秒`);
     if (browser.readyState === WebSocket.OPEN) browser.close();
   });
 
   browser.on("message", (data, isBinary) => {
     if (!isBinary) return;
+    audioBytes += data.length;
     if (upstream.readyState === WebSocket.OPEN) upstream.send(data);
     else if (upstream.readyState === WebSocket.CONNECTING) pending.push(data);
   });
 
   browser.on("close", () => {
     clearInterval(keepAlive);
+    clearInterval(statsTimer);
     if (upstream.readyState === WebSocket.OPEN) {
       upstream.send(JSON.stringify({ type: "CloseStream" }));
       upstream.close();
