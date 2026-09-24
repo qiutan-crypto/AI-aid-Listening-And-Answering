@@ -19,9 +19,11 @@
    ```bash
    npm install
    ```
-3. 把 `.env.example` 复制一份，改名为 `.env`，填入 Key：
-   - `ANTHROPIC_API_KEY`（必填）：在 <https://console.anthropic.com/> 申请，用来生成回答提示。
-   - `DEEPGRAM_API_KEY`（可选）：在 <https://console.deepgram.com/> 申请。填了以后识别更准，而且能听电脑里的声音。
+3. 把 `.env.example` 复制一份，改名为 `.env`，填入两个 Key：
+   - `DEEPGRAM_API_KEY`：把英文语音转成文字（<https://console.deepgram.com/>）。
+   - `GEMINI_API_KEY`：根据对话生成文字回答提示（<https://aistudio.google.com/apikey>）。
+
+   流程是：**声音 → Deepgram 转成英文文字 → Gemini 生成回答提示（只出文字，不出声音）**。
 
 ## 二、使用
 
@@ -35,8 +37,8 @@ npm start
 
 | 你的情况 | 语音识别 | 对方的声音从哪来 |
 | --- | --- | --- |
-| 手机打电话，开**免提外放**放在电脑旁边 | 浏览器自带 或 Deepgram | 麦克风 |
-| 当面和人说话 | 浏览器自带 或 Deepgram | 麦克风 |
+| 手机打电话，开**免提外放**放在电脑旁边 | Deepgram | 麦克风 |
+| 当面和人说话 | Deepgram | 麦克风 |
 | 用电脑打电话（Zoom、Teams、Google Meet、WhatsApp 网页版、网络电话等） | **Deepgram** | 电脑声音 |
 
 - **麦克风模式**：只有一个麦克风，程序分不清谁在说话。默认都算「对方」；**你自己说话时按住空格键**（或按住左下角的按钮），这样你的话会标成「我」，AI 能更好地理解上下文。
@@ -55,9 +57,8 @@ npm start
 
 ## 三、费用和隐私
 
-- 浏览器自带识别是免费的（Chrome 会把声音发到 Google 的服务器识别）。
-- Deepgram 按识别时长收费，新用户有免费额度。
-- Claude 按用量收费；每条提示只发送最近 30 句对话和你的背景信息。
+- Deepgram 按识别时长收费，新用户有免费额度。（没有 Deepgram 时也可以在设置里选「浏览器自带」识别，免费但没那么准。）
+- Gemini 按用量收费（有免费额度）；每条提示只发送最近 30 句对话文字和你的背景信息，不发送声音。
 - 服务器默认只在你自己电脑上运行（只监听 `127.0.0.1`），API Key 保存在 `.env`，不会发到浏览器。
 
 ## 四、技术说明
@@ -65,11 +66,13 @@ npm start
 ```
 浏览器 (public/)                      本机 Node 服务器 (server.js)
  ├─ 麦克风 / 电脑声音                   ├─ /ws/stt   → Deepgram 实时识别（转发音频）
- ├─ Web Speech API（浏览器自带识别）      └─ /api/hint → Claude（流式返回提示）
+ ├─ Web Speech API（浏览器自带识别）      └─ /api/hint → Gemini（流式返回文字提示）
  ├─ 左：字幕    右：AI 提示卡片
 ```
 
-- `src/hint.js`：给 Claude 的提示词和调用（默认模型 `claude-opus-5`，`effort: low` 以求最快出结果；开启了服务器端 `fallbacks: "default"`，万一请求被模型拒绝会自动换模型重试）。
+- `src/prompt.js`：给 AI 的提示词（回答格式、用简单英文等规则），想调整 AI 的回答风格就改这里。
+- `src/ai/gemini.js`：调用 Gemini（默认 `gemini-flash-latest`，思考深度 `low` 以求最快出结果）。
+- `src/ai/claude.js`：备用。没填 `GEMINI_API_KEY`、填了 `ANTHROPIC_API_KEY` 时改用 Claude。
 - `src/deepgram.js`：Deepgram 实时识别的 WebSocket 转发。
 - `public/pcm-worklet.js`：把音频转成 16kHz PCM 发给服务器。
-- 可在 `.env` 用 `HINT_MODEL` / `HINT_EFFORT` 调整模型和思考深度。
+- 可在 `.env` 用 `GEMINI_MODEL` / `GEMINI_THINKING` 调整模型和思考深度。

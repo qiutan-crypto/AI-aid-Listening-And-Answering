@@ -43,7 +43,7 @@ const store = {
   },
 };
 
-let serverConfig = { deepgram: false, claude: false };
+let serverConfig = { deepgram: false, ai: null };
 let fontSize = store.get("fontSize", 18);
 
 function applyFontSize() {
@@ -52,7 +52,8 @@ function applyFontSize() {
 }
 
 function loadSettings() {
-  els.engine.value = store.get("engine", "browser");
+  // 服务器配置了 Deepgram 就默认用它
+  els.engine.value = store.get("engine", serverConfig.deepgram ? "deepgram" : "browser");
   els.source.value = store.get("source", "mic");
   els.meMic.checked = store.get("meMic", true);
   els.autoHint.checked = store.get("autoHint", true);
@@ -88,7 +89,7 @@ function updateSettingsUi() {
   } else if (system) {
     notes.push("开始后浏览器会让你选择要分享的屏幕/标签页，一定要勾选「分享系统音频 / 标签页音频」。戴耳机效果最好。");
   }
-  if (!serverConfig.claude) notes.push("⚠️ 服务器还没有配置 ANTHROPIC_API_KEY，AI 提示不能用。");
+  if (!serverConfig.ai) notes.push("⚠️ 服务器还没有配置 GEMINI_API_KEY，AI 提示不能用。");
   els.engineNote.textContent = notes.join(" ");
 }
 
@@ -336,7 +337,8 @@ function renderHint(card, raw) {
   const body = card.querySelector(".card-body");
   body.replaceChildren();
   for (const rawLine of raw.split("\n")) {
-    const line = rawLine.trim();
+    // 去掉模型偶尔加上的 Markdown 粗体符号
+    const line = rawLine.replace(/\*\*/g, "").trim();
     if (!line) continue;
     const p = document.createElement("div");
     const sec = line.match(/^【(.+?)】\s*(.*)$/);
