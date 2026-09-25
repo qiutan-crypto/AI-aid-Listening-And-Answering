@@ -66,6 +66,9 @@ export function bridgeToDeepgram(browser) {
         text,
         isFinal: Boolean(msg.is_final),
         speechFinal: Boolean(msg.speech_final),
+        // 这段文字在音频里的位置（秒，从这条连接收到的第一段声音算起），回顾时回放录音用
+        start: Number(msg.start) || 0,
+        duration: Number(msg.duration) || 0,
       });
     } else if (msg.type === "UtteranceEnd") {
       sendToBrowser({ type: "utterance_end" });

@@ -54,6 +54,10 @@
       <label class="check"><input type="checkbox" id="meMic" checked /> 同时用麦克风识别我说的话</label>
     </div>
     <div class="row">
+      <label>录音</label>
+      <label class="check"><input type="checkbox" id="recordAudio" checked /> 录下双方的声音，回顾时点文字就能回放那一句（录音只在这个网页里，刷新或清空后就没有了）</label>
+    </div>
+    <div class="row">
       <label>自动提示</label>
       <label class="check"><input type="checkbox" id="autoHint" checked /> 对方说完一句话后自动给出回答建议</label>
     </div>
@@ -117,9 +121,10 @@
       <div class="spacer"></div>
       <button id="explainBtn" class="primary">生成中文解释和关键词</button>
       <button id="downloadBtn" class="ghost">下载记录</button>
+      <button id="downloadAudioBtn" class="ghost">下载录音</button>
       <button id="backBtn" class="ghost">↩ 返回实时</button>
     </div>
-    <div class="review-cols"><span>对方说的话（和我说的话）</span><span>AI 当时给的建议</span></div>
+    <div class="review-cols"><span>对方说的话（和我说的话）· 点文字回放录音</span><span>AI 当时给的建议</span></div>
     <div id="reviewList" class="scroll review-list"></div>
   </main>
 
