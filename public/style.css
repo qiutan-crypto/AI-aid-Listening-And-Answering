@@ -203,6 +203,7 @@ button.secondary { color: var(--accent); border-color: var(--accent); }
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
 }
+.card .card-head .lat { float: right; margin-left: 8px; color: var(--me); font-weight: 600; }
 /* 对方的话很长时最多显示两行，完整内容在左边字幕里 */
 .card .card-head .q {
   display: -webkit-box;

@@ -5,7 +5,7 @@ import express from "express";
 import { WebSocketServer } from "ws";
 import { bridgeToDeepgram, deepgramEnabled } from "./src/deepgram.js";
 import { addDoc, deleteDoc, DocError, listDocs, MAX_TOTAL_CHARS, updateDoc } from "./src/docs.js";
-import { activeProvider, describeError, explainItems, streamHint } from "./src/hint.js";
+import { activeProvider, describeError, explainItems, streamHint, warmUp } from "./src/hint.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -42,6 +42,9 @@ app.post("/api/hint", async (req, res) => {
     "X-Accel-Buffering": "no",
   });
 
+  // 在终端里显示 AI 用了多久：「首字」越短，提示出来得越快
+  const t0 = Date.now();
+  let firstAt = 0;
   try {
     await streamHint({
       context,
@@ -49,8 +52,12 @@ app.post("/api/hint", async (req, res) => {
       focus,
       scene,
       signal: controller.signal,
-      onText: (t) => res.write(t),
+      onText: (t) => {
+        if (!firstAt) firstAt = Date.now();
+        res.write(t);
+      },
     });
+    if (firstAt) console.log(`[提示] AI 首字 ${((firstAt - t0) / 1000).toFixed(1)} 秒，写完 ${((Date.now() - t0) / 1000).toFixed(1)} 秒`);
   } catch (err) {
     if (!controller.signal.aborted) {
       res.write(`\n\n[错误] ${describeError(err)}`);
@@ -58,6 +65,16 @@ app.post("/api/hint", async (req, res) => {
     }
   }
   res.end();
+});
+
+// 点「开始听」时预热到 AI 服务的连接
+app.post("/api/warmup", async (_req, res) => {
+  try {
+    await warmUp();
+  } catch (err) {
+    console.warn("预热 AI 连接失败（不影响使用）：", describeError(err));
+  }
+  res.json({ ok: true });
 });
 
 // 通话结束后的回顾：一次最多解释 20 句，前端会分批发

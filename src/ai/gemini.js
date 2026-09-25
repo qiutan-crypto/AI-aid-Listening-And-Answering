@@ -64,6 +64,11 @@ export async function stream({ system, userMessage, onText, signal }) {
   );
 }
 
+/** 预热：先查一下模型信息，把网络连接建立好（不消耗 token） */
+export async function warm() {
+  await getClient().models.get({ model: MODEL });
+}
+
 /** 返回按 schema 解析好的 JSON 对象 */
 export async function json({ system, userMessage, schema, signal }) {
   return withThinkingFallback(

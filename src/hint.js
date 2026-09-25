@@ -27,6 +27,10 @@ export async function streamHint({ context, transcript, focus, scene, onText, si
   await provider.stream({ system, userMessage: buildUserMessage({ context, transcript, focus }), onText, signal });
 }
 
+export async function warmUp() {
+  await activeProvider()?.warm();
+}
+
 /**
  * 通话结束后：给每句「对方的话 + 当时的英文建议」生成中文意思、建议的中文翻译和关键词
  * @param {{scene?: string, items: {id: string, them: string, suggestions: string[]}[], signal?: AbortSignal}} opts

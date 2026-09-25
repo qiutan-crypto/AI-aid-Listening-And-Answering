@@ -266,15 +266,16 @@ function onSpeech(speaker, text, isFinal, audio) {
   renderLine(line);
 
   if (speaker === "them") {
-    if (isFinal && text) scheduleAutoHint();
-    else if (!isFinal) postponeAutoHint();
+    // 像 voice agent 一样「抢跑」：每确认一段文字就马上去问 AI，不等对方完全说完；
+    // 对方接着说，就在同一张卡片上重新生成
+    if (isFinal && text) scheduleAutoHint(120);
   }
 }
 
 /** 一句话说完（Deepgram 的 utterance_end，或浏览器识别的句子结束） */
 function onUtteranceEnd(speaker) {
   closeLines(speaker);
-  if (speaker === "them") scheduleAutoHint(250);
+  if (speaker === "them") scheduleAutoHint(0);
 }
 
 els.clearBtn.addEventListener("click", () => {
@@ -283,6 +284,7 @@ els.clearBtn.addEventListener("click", () => {
   els.hints.innerHTML = '<p class="empty">已清空。</p>';
   hinted = { id: 0, len: 0 };
   hintLog = [];
+  cardByLine.clear();
   explainCache.clear();
   player.stop();
   recorder.clear();
@@ -299,15 +301,14 @@ let hinted = { id: 0, len: 0 }; // 已经给过提示的那一行「对方」的
 let hintLog = [];
 let hintSeq = 0;
 
-function scheduleAutoHint(delay = 1100) {
+function scheduleAutoHint(delay) {
   if (!els.autoHint.checked) return;
   clearTimeout(hintTimer);
   hintTimer = setTimeout(() => requestHint({ auto: true }), delay);
 }
-function postponeAutoHint() {
-  // 对方还在说：推迟自动提示
-  if (hintTimer) scheduleAutoHint();
-}
+
+/** 每句对方的话对应一张提示卡片：对方接着说时更新同一张，不再堆一串 */
+const cardByLine = new Map();
 
 function transcriptForAi() {
   return lines
@@ -337,7 +338,11 @@ async function requestHint({ auto = false, focus = "" } = {}) {
   hintAbort = controller;
 
   const quote = focus ? "你问：" + focus : "对方：" + (lastThem.text + " " + lastThem.interim).trim();
-  const card = createHintCard(quote);
+  const reuse = !focus && cardByLine.get(lastThem.id);
+  const card = reuse && reuse.isConnected ? reuseHintCard(reuse, quote) : createHintCard(quote);
+  if (!focus) cardByLine.set(lastThem.id, card);
+  // 从「最后一次收到对方的文字」到「AI 出第一个字」的时间，显示在卡片上
+  const speechAt = focus ? Date.now() : lastThem.updated;
   let raw = "";
   const entry = {
     id: ++hintSeq,
@@ -350,6 +355,7 @@ async function requestHint({ auto = false, focus = "" } = {}) {
     time: new Date(),
   };
   hintLog.push(entry);
+  card.dataset.owner = String(entry.id);
 
   try {
     const res = await fetch("/api/hint", {
@@ -364,6 +370,7 @@ async function requestHint({ auto = false, focus = "" } = {}) {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (!raw) setLatency(card, Date.now() - speechAt);
       raw += decoder.decode(value, { stream: true });
       entry.raw = raw;
       renderHint(card, raw);
@@ -377,6 +384,8 @@ async function requestHint({ auto = false, focus = "" } = {}) {
     card.classList.remove("pending");
     if (err.name === "AbortError") {
       entry.superseded = true;
+      // 同一句话的新请求接管了这张卡片：什么都不用做
+      if (card.dataset.owner !== String(entry.id)) return;
       if (!raw) card.remove();
       else card.querySelector(".card-head .q").textContent += "（已被新的提示替换）";
     } else {
@@ -388,6 +397,28 @@ async function requestHint({ auto = false, focus = "" } = {}) {
   }
 }
 
+/** 同一句话再次生成：把卡片移到最上面，旧内容先留着，新内容一到就替换 */
+function reuseHintCard(card, quote) {
+  for (const c of els.hints.querySelectorAll(".card.latest")) c.classList.remove("latest");
+  card.classList.add("latest", "pending");
+  card.querySelector(".card-head .q").textContent = hintTime() + " · " + quote;
+  card.querySelector(".card-head").title = quote;
+  card.querySelector(".lat").textContent = "";
+  els.hints.prepend(card);
+  els.hints.scrollTop = 0;
+  return card;
+}
+
+function hintTime() {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function setLatency(card, ms) {
+  const el = card.querySelector(".lat");
+  el.textContent = `⚡${(ms / 1000).toFixed(1)} 秒`;
+  el.title = "从收到对方最后一段文字，到 AI 出第一个字用的时间";
+}
+
 function createHintCard(quote) {
   clearEmpty(els.hints);
   for (const c of els.hints.querySelectorAll(".card.latest")) c.classList.remove("latest");
@@ -395,11 +426,12 @@ function createHintCard(quote) {
   card.className = "card latest pending";
   const head = document.createElement("div");
   head.className = "card-head";
-  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const q = document.createElement("span");
   q.className = "q";
-  q.textContent = time + " · " + quote;
-  head.append(q);
+  q.textContent = hintTime() + " · " + quote;
+  const lat = document.createElement("span");
+  lat.className = "lat";
+  head.append(lat, q);
   head.title = quote;
   const body = document.createElement("div");
   body.className = "card-body";
@@ -1128,6 +1160,8 @@ async function startListening() {
         recognizers.push(new DeepgramStream(await getMic(), "auto"));
       }
     }
+    // 先和 AI 服务建立好连接，第一次提问就不用再等握手
+    fetch("/api/warmup", { method: "POST" }).catch(() => {});
     for (const r of recognizers) await r.start();
     listening = true;
     audioLevel.start();
