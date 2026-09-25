@@ -142,7 +142,7 @@ wss.on("connection", (ws) => {
 function onListenError(err) {
   if (err.code === "EADDRINUSE") {
     console.error(`\n端口 ${PORT} 已经被别的程序占用了。`);
-    console.error("请用记事本打开 .env，加一行 PORT=3001（或其它没被占用的数字），保存后重新启动。\n");
+    console.error("请打开 .env 文件（Windows 用记事本，Mac 用「文本编辑」），加一行 PORT=3001（或其它没被占用的数字），保存后重新启动。\n");
   } else {
     console.error("服务器启动失败：", err);
   }
