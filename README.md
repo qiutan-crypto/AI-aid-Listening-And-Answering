@@ -27,7 +27,11 @@
 
 安装好 Node.js 后，双击项目文件夹里的 **`start-mac.command`**。
 
-- 第一次如果提示"无法打开，因为无法验证开发者"：**右键点它 →「打开」→「打开」**，以后就能直接双击了。
+- 第一次如果提示 "Apple could not verify … is free of malware"（无法验证是否含有恶意软件）：点「完成」（不要点「移到废纸篓」），然后在终端里运行一次下面这行，以后就能直接双击了：
+  ```bash
+  xattr -d com.apple.quarantine ~/Documents/AI-aid-Listening-And-Answering/start-mac.command
+  ```
+  或者打开「系统设置 → 隐私与安全性」，在下方找到这个文件被阻止的提示，点「仍要打开」。
 - 第一次会自动安装组件，并用「文本编辑」打开 `.env`，填好 Key、保存、关闭后，回到终端窗口按回车。
 - 之后每次双击都会启动程序，并自动用 Chrome 打开页面。终端窗口不要关。
 

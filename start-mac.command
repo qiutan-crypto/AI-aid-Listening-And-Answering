@@ -1,5 +1,5 @@
 #!/bin/bash
-# Mac：双击启动英语对话助手（第一次可能要右键 →「打开」）
+# Mac：双击启动英语对话助手（第一次被系统拦截时，见 README 的「Mac：双击启动」）
 cd "$(dirname "$0")" || exit 1
 
 if ! command -v node >/dev/null 2>&1; then
