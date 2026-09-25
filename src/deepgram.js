@@ -8,8 +8,11 @@ export function deepgramEnabled() {
   return Boolean(process.env.DEEPGRAM_API_KEY);
 }
 
-/** @param {WebSocket} browser */
-export function bridgeToDeepgram(browser) {
+/**
+ * @param {WebSocket} browser
+ * @param {{diarize?: boolean}} [opts] diarize = 让 Deepgram 听声音自动区分不同的说话人
+ */
+export function bridgeToDeepgram(browser, { diarize = false } = {}) {
   const params = new URLSearchParams({
     model: process.env.DEEPGRAM_MODEL || "nova-3",
     language: process.env.DEEPGRAM_LANGUAGE || "en",
@@ -22,6 +25,7 @@ export function bridgeToDeepgram(browser) {
     endpointing: "300",
     utterance_end_ms: "1200",
   });
+  if (diarize) params.set("diarize", "true");
 
   const upstream = new WebSocket(`${DEEPGRAM_URL}?${params}`, {
     headers: { Authorization: `Token ${process.env.DEEPGRAM_API_KEY}` },
@@ -71,7 +75,8 @@ export function bridgeToDeepgram(browser) {
         start: Number(msg.start) || 0,
         duration: Number(msg.duration) || 0,
         // 每个单词的时间：单麦克风模式下按「按住空格」的时间一个词一个词地分出「我」和「对方」
-        words: (alt?.words ?? []).map((w) => ({ w: w.punctuated_word || w.word, s: w.start, e: w.end })),
+        // sp = Deepgram 听出来的说话人编号（打开「自动区分说话人」时才有）
+        words: (alt?.words ?? []).map((w) => ({ w: w.punctuated_word || w.word, s: w.start, e: w.end, sp: w.speaker })),
       });
     } else if (msg.type === "UtteranceEnd") {
       sendToBrowser({ type: "utterance_end" });

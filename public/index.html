@@ -49,6 +49,13 @@
       <select id="micDevice"><option value="">系统默认麦克风</option></select>
       <button id="micRefresh" type="button" class="ghost" title="重新读取麦克风列表">刷新</button>
     </div>
+    <div class="row" id="speakerModeRow">
+      <label>区分说话人</label>
+      <select id="speakerMode">
+        <option value="hold">手动：我说话时按住空格</option>
+        <option value="auto">自动：Deepgram 听声音分辨（需 Deepgram）</option>
+      </select>
+    </div>
     <div class="row" id="meMicRow">
       <label>我说的话</label>
       <label class="check"><input type="checkbox" id="meMic" checked /> 同时用麦克风识别我说的话</label>
@@ -96,6 +103,7 @@
       </div>
       <div class="pane-foot">
         <button id="holdMe" class="hold" title="按住时识别到的话标记为「我」">按住 = 我在说话（或按住空格）</button>
+        <button id="swapBtn" class="ghost" title="自动区分把「我」和「对方」认反了？点这里对调" hidden>⇄ 对调</button>
         <button id="hintNow" class="secondary">现在给提示</button>
       </div>
     </section>

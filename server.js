@@ -146,13 +146,14 @@ app.delete("/api/docs/:id", docRoute(async (req, res) => {
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws/stt" });
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
   if (!deepgramEnabled()) {
     ws.send(JSON.stringify({ type: "error", message: "服务器没有配置 DEEPGRAM_API_KEY" }));
     ws.close();
     return;
   }
-  bridgeToDeepgram(ws);
+  const query = new URL(req.url, "http://localhost").searchParams;
+  bridgeToDeepgram(ws, { diarize: query.get("diarize") === "1" });
 });
 
 // 端口被占用等启动错误（WebSocketServer 会把同一个错误再转发一次，两处都要接住）

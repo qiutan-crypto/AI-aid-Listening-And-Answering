@@ -12,6 +12,9 @@ const els = {
   fontDown: $("fontDown"),
   engine: $("engine"),
   scene: $("scene"),
+  speakerMode: $("speakerMode"),
+  speakerModeRow: $("speakerModeRow"),
+  swapBtn: $("swapBtn"),
   recordAudio: $("recordAudio"),
   downloadAudioBtn: $("downloadAudioBtn"),
   panes: $("panes"),
@@ -80,6 +83,7 @@ function loadSettings() {
   els.source.value = store.get("source", "mic");
   els.meMic.checked = store.get("meMic", true);
   els.autoHint.checked = store.get("autoHint", true);
+  els.speakerMode.value = store.get("speakerMode", "hold");
   els.recordAudio.checked = store.get("recordAudio", true);
   els.context.value = store.get("context", "");
   applyFontSize();
@@ -93,6 +97,7 @@ function saveSettings() {
   store.set("source", els.source.value);
   store.set("meMic", els.meMic.checked);
   store.set("autoHint", els.autoHint.checked);
+  store.set("speakerMode", els.speakerMode.value);
   store.set("recordAudio", els.recordAudio.checked);
   store.set("context", els.context.value);
 }
@@ -102,6 +107,8 @@ function updateSettingsUi() {
   const deepgram = els.engine.value === "deepgram";
   const system = els.source.value === "system";
   els.meMicRow.hidden = !system;
+  // 电脑声音模式下「对方」「我」本来就是两路声音，不用区分
+  els.speakerModeRow.hidden = system;
   const notes = [];
   if (!deepgram && system) {
     notes.push("⚠️ 浏览器自带识别只能听麦克风。要听电脑里的声音，请把「语音识别」改成 Deepgram。");
@@ -112,8 +119,15 @@ function updateSettingsUi() {
   if (!deepgram && !("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
     notes.push("⚠️ 这个浏览器不支持自带语音识别，请用 Chrome 或 Edge，或改用 Deepgram。");
   }
+  if (!system && els.speakerMode.value === "auto") {
+    notes.push(
+      deepgram
+        ? "自动区分说话人：开始后先按住空格说一句英文，让程序记住你的声音；以后不按空格也能分出「我」和「对方」。认反了点字幕下面的「⇄ 对调」。"
+        : "⚠️ 自动区分说话人需要 Deepgram，浏览器自带识别只能用手动方式（按住空格）。",
+    );
+  }
   if (!deepgram) notes.push("浏览器自带识别总是使用 Mac 系统设置里的默认麦克风，上面的麦克风选择只对 Deepgram 有效。");
-  if (!system) {
+  if (!system && !(deepgram && els.speakerMode.value === "auto")) {
     notes.push("只有一个麦克风时，程序分不清是谁在说话：默认都算「对方」，你自己说话时请按住空格或下面的按钮。");
   } else if (system) {
     notes.push("开始后浏览器会让你选择要分享的屏幕/标签页，一定要勾选「分享系统音频 / 标签页音频」。戴耳机效果最好。");
@@ -122,7 +136,7 @@ function updateSettingsUi() {
   els.engineNote.textContent = notes.join(" ");
 }
 
-for (const el of [els.scene, els.micDevice, els.engine, els.source, els.meMic, els.autoHint, els.recordAudio]) {
+for (const el of [els.scene, els.speakerMode, els.micDevice, els.engine, els.source, els.meMic, els.autoHint, els.recordAudio]) {
   el.addEventListener("change", () => {
     saveSettings();
     updateSettingsUi();
@@ -193,6 +207,20 @@ document.addEventListener("keydown", (e) => {
 document.addEventListener("keyup", (e) => {
   if (e.code === "Space" && !typingInField(e)) setMeHeld(false);
 });
+// 自动区分说话人认反了：以后的话对调，已经自动标过的字幕也一起改过来
+els.swapBtn.addEventListener("click", () => {
+  const streams = recognizers.filter((r) => r instanceof DeepgramStream && r.diarize);
+  if (!streams.length) return;
+  for (const r of streams) r.swap();
+  for (const l of lines) {
+    if (!l.autoLabeled) continue;
+    l.speaker = l.speaker === "me" ? "them" : "me";
+    l.el.className = "line " + l.speaker;
+    renderLine(l);
+  }
+  toast("已对调「我」和「对方」。");
+});
+
 // 按着空格时切到别的窗口，浏览器收不到「松开」：当作已经松开，免得一直算成「我」
 window.addEventListener("blur", () => meHeld && setMeHeld(false));
 document.addEventListener("visibilitychange", () => document.hidden && meHeld && setMeHeld(false));
@@ -303,7 +331,7 @@ function onSpeech(speaker, text, isFinal, audio) {
   } else {
     line.interim = text;
   }
-  if (!line.text && !line.interim) return;
+  if (!line.text && !line.interim) return line;
   line.updated = Date.now();
   renderLine(line);
 
@@ -312,6 +340,7 @@ function onSpeech(speaker, text, isFinal, audio) {
     // 对方接着说，就在同一张卡片上重新生成
     if (isFinal && text) scheduleAutoHint(120);
   }
+  return line;
 }
 
 /** 一句话说完（Deepgram 的 utterance_end，或浏览器识别的句子结束） */
@@ -1016,8 +1045,12 @@ class DeepgramStream {
    * @param {MediaStream} media
    * @param {"me"|"them"|"auto"} speaker auto = 单麦克风模式，按住空格算「我」
    */
-  constructor(media, speaker) {
+  constructor(media, speaker, { diarize = false } = {}) {
     this.media = media;
+    this.diarize = diarize;
+    /** 自动区分说话人：Deepgram 的说话人编号 → 「me」/「them」。按住空格说话时学会哪个编号是我 */
+    this.speakerMap = new Map();
+    this.unknownIs = "them";
     this.fixedSpeaker = speaker;
     this.currentSpeaker = speaker === "auto" ? "them" : speaker;
     this.track = recorder.newTrack(speaker === "them" ? "对方" : speaker === "me" ? "我" : "麦克风");
@@ -1031,7 +1064,7 @@ class DeepgramStream {
 
   async start() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    this.ws = new WebSocket(`${proto}://${location.host}/ws/stt`);
+    this.ws = new WebSocket(`${proto}://${location.host}/ws/stt${this.diarize ? "?diarize=1" : ""}`);
     this.ws.binaryType = "arraybuffer";
     this.ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
@@ -1078,13 +1111,17 @@ class DeepgramStream {
   handleSplit(msg) {
     const runs = [];
     for (const w of msg.words) {
-      const speaker = wasMeAt(this.t0 + ((w.s + w.e) / 2) * 1000) ? "me" : "them";
+      const held = wasMeAt(this.t0 + ((w.s + w.e) / 2) * 1000);
+      const sp = this.diarize && w.sp != null ? w.sp : null;
+      // 按住空格时说的词：一定算「我」，并记住这个声音（只从确认过的结果里学）
+      if (held && sp !== null && msg.isFinal) this.learnMe(sp);
+      const speaker = held ? "me" : sp !== null ? this.speakerMap.get(sp) ?? this.unknownIs : "them";
       const last = runs[runs.length - 1];
-      if (last && last.speaker === speaker) {
+      if (last && last.speaker === speaker && last.sp === sp) {
         last.words.push(w.w);
         last.e = w.e;
       } else {
-        runs.push({ speaker, words: [w.w], s: w.s, e: w.e });
+        runs.push({ speaker, sp, words: [w.w], s: w.s, e: w.e });
       }
     }
     // 这一段里没有出现的那一方：清掉它还没确认的临时文字，免得残留
@@ -1093,9 +1130,27 @@ class DeepgramStream {
     }
     for (const r of runs) {
       const audio = this.track ? { trackId: this.track.id, start: r.s, end: r.e } : undefined;
-      onSpeech(r.speaker, r.words.join(" "), msg.isFinal, audio);
+      const line = onSpeech(r.speaker, r.words.join(" "), msg.isFinal, audio);
+      // 记下这行是按「自动区分」标的，对调时一起改
+      if (line && r.sp !== null && !wasMeAt(this.t0 + r.s * 1000)) line.autoLabeled = true;
     }
     this.currentSpeaker = runs[runs.length - 1].speaker;
+  }
+
+  learnMe(sp) {
+    if (this.speakerMap.get(sp) === "me") return;
+    for (const [k, v] of this.speakerMap) if (v === "me") this.speakerMap.set(k, "them");
+    this.speakerMap.set(sp, "me");
+    if (!this.learnedOnce) {
+      this.learnedOnce = true;
+      toast("已经记住你的声音了：之后不按空格，程序也会自动分出「我」和「对方」。", 6000);
+    }
+  }
+
+  /** 认反了：把「我」和「对方」对调 */
+  swap() {
+    for (const [k, v] of this.speakerMap) this.speakerMap.set(k, v === "me" ? "them" : "me");
+    this.unknownIs = this.unknownIs === "me" ? "them" : "me";
   }
 
   endUtterance() {
@@ -1230,7 +1285,10 @@ async function startListening() {
         recognizers.push(new DeepgramStream(await getSystemAudio(), "them"));
         if (els.meMic.checked) recognizers.push(new DeepgramStream(await getMic(), "me"));
       } else {
-        recognizers.push(new DeepgramStream(await getMic(), "auto"));
+        const diarize = els.speakerMode.value === "auto";
+        recognizers.push(new DeepgramStream(await getMic(), "auto", { diarize }));
+        els.swapBtn.hidden = !diarize;
+        if (diarize) toast("自动区分说话人：请先按住空格说一句英文，让程序记住你的声音。", 8000);
       }
     }
     // 先和 AI 服务建立好连接，第一次提问就不用再等握手
@@ -1257,6 +1315,7 @@ function stopListening() {
   for (const s of mediaStreams) for (const t of s.getTracks()) t.stop();
   mediaStreams = [];
   audioLevel.reset();
+  els.swapBtn.hidden = true;
   closeLines();
   els.startBtn.textContent = "▶ 开始听";
   els.startBtn.classList.remove("running");
