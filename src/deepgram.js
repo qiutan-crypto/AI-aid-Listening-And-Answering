@@ -58,7 +58,8 @@ export function bridgeToDeepgram(browser) {
       return;
     }
     if (msg.type === "Results") {
-      const text = msg.channel?.alternatives?.[0]?.transcript ?? "";
+      const alt = msg.channel?.alternatives?.[0];
+      const text = alt?.transcript ?? "";
       // 在终端里也显示识别结果，方便排查
       if (msg.is_final && text) console.log("[识别]", text);
       sendToBrowser({
@@ -69,6 +70,8 @@ export function bridgeToDeepgram(browser) {
         // 这段文字在音频里的位置（秒，从这条连接收到的第一段声音算起），回顾时回放录音用
         start: Number(msg.start) || 0,
         duration: Number(msg.duration) || 0,
+        // 每个单词的时间：单麦克风模式下按「按住空格」的时间一个词一个词地分出「我」和「对方」
+        words: (alt?.words ?? []).map((w) => ({ w: w.punctuated_word || w.word, s: w.start, e: w.end })),
       });
     } else if (msg.type === "UtteranceEnd") {
       sendToBrowser({ type: "utterance_end" });

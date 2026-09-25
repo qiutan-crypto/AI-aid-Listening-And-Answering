@@ -147,15 +147,33 @@ function setStatus(text, cls) {
 
 // ---------- 「我在说话」按住标记（单麦克风模式用） ----------
 let meHeld = false;
-let meHeldUntil = 0; // 松开后再多算 1 秒，识别结果常常晚一点到
+let meHeldUntil = 0; // 浏览器自带识别没有单词时间：松开后再多算一小会儿，识别结果常常晚一点到
+/** 每次按住的时间段 [按下, 松开]（performance.now 毫秒）；Deepgram 按单词时间对照这个表判断是谁在说 */
+const holdIntervals = [];
 
 function setMeHeld(on) {
+  if (on === meHeld) return;
   meHeld = on;
-  if (!on) meHeldUntil = Date.now() + 1000;
+  const now = performance.now();
+  if (on) holdIntervals.push([now, Infinity]);
+  else {
+    const last = holdIntervals[holdIntervals.length - 1];
+    if (last) last[1] = now;
+    meHeldUntil = Date.now() + 600;
+  }
   els.holdMe.classList.toggle("active", on);
 }
 function isMeSpeaking() {
   return meHeld || Date.now() < meHeldUntil;
+}
+/** 这个时间点（performance.now 毫秒）有没有按住空格；前后各留一点余量 */
+function wasMeAt(t) {
+  for (let i = holdIntervals.length - 1; i >= 0; i--) {
+    const [down, up] = holdIntervals[i];
+    if (t >= down - 150 && t <= up + 150) return true;
+    if (up < t - 120000) break;
+  }
+  return false;
 }
 
 els.holdMe.addEventListener("pointerdown", (e) => { e.preventDefault(); setMeHeld(true); });
@@ -175,6 +193,9 @@ document.addEventListener("keydown", (e) => {
 document.addEventListener("keyup", (e) => {
   if (e.code === "Space" && !typingInField(e)) setMeHeld(false);
 });
+// 按着空格时切到别的窗口，浏览器收不到「松开」：当作已经松开，免得一直算成「我」
+window.addEventListener("blur", () => meHeld && setMeHeld(false));
+document.addEventListener("visibilitychange", () => document.hidden && meHeld && setMeHeld(false));
 
 // ---------- 字幕 ----------
 /** @type {{id:number, speaker:"me"|"them", text:string, interim:string, closed:boolean, updated:number, audio:null|{trackId:number,start:number,end:number}, el:HTMLElement}[]} */
@@ -187,9 +208,16 @@ function clearEmpty(container) {
 }
 
 function openLine(speaker) {
-  const last = lines[lines.length - 1];
-  // 同一个人接着说、并且停顿不超过 4 秒：接在同一行
-  if (last && !last.closed && last.speaker === speaker && Date.now() - last.updated < 4000) return last;
+  // 同一个人接着说、并且停顿不超过 4 秒：接在同一行。
+  // 中间如果只有另一方「还没确认」的临时文字（同一段识别里两个人的话被切开时会这样），也接在同一行。
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (l.speaker === speaker) {
+      if (!l.closed && Date.now() - l.updated < 4000) return l;
+      break;
+    }
+    if (l.text) break;
+  }
   // 说话的人换了：把之前还开着的同一人的行关掉
   for (const l of lines) if (!l.closed && l.speaker === speaker) l.closed = true;
   clearEmpty(els.transcript);
@@ -216,6 +244,20 @@ function renderLine(line) {
   const box = els.transcript;
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   if (nearBottom) box.scrollTop = box.scrollHeight;
+}
+
+/** 清掉某一方还没确认的临时文字 */
+function clearInterim(speaker) {
+  for (const l of [...lines]) {
+    if (l.closed || l.speaker !== speaker || !l.interim) continue;
+    l.interim = "";
+    if (l.text) renderLine(l);
+    else {
+      // 这一行只有临时文字，清掉后就是空行：直接去掉
+      l.el.remove();
+      lines.splice(lines.indexOf(l), 1);
+    }
+  }
 }
 
 function closeLines(speaker) {
@@ -893,6 +935,8 @@ class MicCapture {
   }
   async start() {
     this.ctx = await attachWorklet(this.media, (audio, peak) => {
+      // 第一段声音开头的时间：Deepgram 给的秒数从这里算起
+      this.t0 ||= performance.now() - (audio.byteLength / 2 / SAMPLE_RATE) * 1000;
       audioLevel.report(this, peak);
       recorder.append(this.track, audio);
     });
@@ -992,12 +1036,14 @@ class DeepgramStream {
     this.ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.type === "transcript") {
-        // 一句话开始时决定是谁在说
-        if (!this.inUtterance) this.currentSpeaker = this.speakerNow();
-        else if (this.fixedSpeaker === "auto" && isMeSpeaking()) this.currentSpeaker = "me";
         this.inUtterance = true;
-        const audio = this.track ? { trackId: this.track.id, start: msg.start, end: msg.start + msg.duration } : undefined;
-        onSpeech(this.currentSpeaker, msg.text, msg.isFinal, audio);
+        if (this.fixedSpeaker === "auto" && msg.words?.length && this.t0) {
+          this.handleSplit(msg);
+        } else {
+          if (this.fixedSpeaker === "auto") this.currentSpeaker = this.speakerNow();
+          const audio = this.track ? { trackId: this.track.id, start: msg.start, end: msg.start + msg.duration } : undefined;
+          onSpeech(this.currentSpeaker, msg.text, msg.isFinal, audio);
+        }
         if (msg.speechFinal) this.endUtterance();
       } else if (msg.type === "utterance_end") {
         this.endUtterance();
@@ -1023,6 +1069,33 @@ class DeepgramStream {
       if (this.ws.readyState === WebSocket.OPEN) this.ws.send(audio);
       else if (this.ws.readyState === WebSocket.CONNECTING) this.queue.push(audio);
     });
+  }
+
+  /**
+   * 单麦克风模式：按每个单词说出的时间，对照「按住空格」的时间段，分成「我」和「对方」。
+   * 这样就算两个人的话被识别成同一句，也会在松开空格的地方切开。
+   */
+  handleSplit(msg) {
+    const runs = [];
+    for (const w of msg.words) {
+      const speaker = wasMeAt(this.t0 + ((w.s + w.e) / 2) * 1000) ? "me" : "them";
+      const last = runs[runs.length - 1];
+      if (last && last.speaker === speaker) {
+        last.words.push(w.w);
+        last.e = w.e;
+      } else {
+        runs.push({ speaker, words: [w.w], s: w.s, e: w.e });
+      }
+    }
+    // 这一段里没有出现的那一方：清掉它还没确认的临时文字，免得残留
+    for (const speaker of ["me", "them"]) {
+      if (!runs.some((r) => r.speaker === speaker)) clearInterim(speaker);
+    }
+    for (const r of runs) {
+      const audio = this.track ? { trackId: this.track.id, start: r.s, end: r.e } : undefined;
+      onSpeech(r.speaker, r.words.join(" "), msg.isFinal, audio);
+    }
+    this.currentSpeaker = runs[runs.length - 1].speaker;
   }
 
   endUtterance() {
