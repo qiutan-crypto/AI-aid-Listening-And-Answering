@@ -20,6 +20,8 @@ app.get("/api/config", (_req, res) => {
   res.json({
     deepgram: deepgramEnabled(),
     ai: activeProvider()?.name ?? null,
+    // 页面用来检查后台是不是新版本（覆盖文件后没重启，后台还是旧的）
+    features: ["diarize"],
   });
 });
 

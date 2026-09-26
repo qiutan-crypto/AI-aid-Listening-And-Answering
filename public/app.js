@@ -12,6 +12,7 @@ const els = {
   fontDown: $("fontDown"),
   engine: $("engine"),
   scene: $("scene"),
+  diarizeStatus: $("diarizeStatus"),
   speakerMode: $("speakerMode"),
   speakerModeRow: $("speakerModeRow"),
   swapBtn: $("swapBtn"),
@@ -262,7 +263,15 @@ function renderLine(line) {
   const who = document.createElement("span");
   who.className = "who";
   who.textContent = line.speaker === "me" ? "我" : "对方";
-  line.el.append(who, document.createTextNode(line.text));
+  line.el.append(who);
+  if (line.sp != null) {
+    // 自动区分说话人时，显示 Deepgram 听出来的是第几个声音，方便看它分得对不对
+    const sp = document.createElement("span");
+    sp.className = "sp";
+    sp.textContent = "声音" + (line.sp + 1);
+    line.el.append(sp);
+  }
+  line.el.append(document.createTextNode(line.text));
   if (line.interim) {
     const i = document.createElement("span");
     i.className = "interim";
@@ -1051,6 +1060,7 @@ class DeepgramStream {
     /** 自动区分说话人：Deepgram 的说话人编号 → 「me」/「them」。按住空格说话时学会哪个编号是我 */
     this.speakerMap = new Map();
     this.unknownIs = "them";
+    this.seenSpeakers = new Set();
     this.fixedSpeaker = speaker;
     this.currentSpeaker = speaker === "auto" ? "them" : speaker;
     this.track = recorder.newTrack(speaker === "them" ? "对方" : speaker === "me" ? "我" : "麦克风");
@@ -1131,8 +1141,17 @@ class DeepgramStream {
     for (const r of runs) {
       const audio = this.track ? { trackId: this.track.id, start: r.s, end: r.e } : undefined;
       const line = onSpeech(r.speaker, r.words.join(" "), msg.isFinal, audio);
-      // 记下这行是按「自动区分」标的，对调时一起改
-      if (line && r.sp !== null && !wasMeAt(this.t0 + r.s * 1000)) line.autoLabeled = true;
+      if (line && r.sp !== null) {
+        line.sp = r.sp;
+        if (msg.isFinal) this.seenSpeakers.add(r.sp);
+        // 记下这行是按「自动区分」标的，对调时一起改
+        if (!wasMeAt(this.t0 + r.s * 1000)) line.autoLabeled = true;
+        renderLine(line);
+      }
+    }
+    if (this.diarize && msg.isFinal) {
+      if (!msg.words.some((w) => w.sp != null)) this.noSpeakerInfo = true;
+      this.updateStatus();
     }
     this.currentSpeaker = runs[runs.length - 1].speaker;
   }
@@ -1145,12 +1164,34 @@ class DeepgramStream {
       this.learnedOnce = true;
       toast("已经记住你的声音了：之后不按空格，程序也会自动分出「我」和「对方」。", 6000);
     }
+    this.updateStatus();
+  }
+
+  /** 字幕上方的小标签：自动区分现在是什么状态 */
+  updateStatus() {
+    if (!this.diarize) return;
+    const el = els.diarizeStatus;
+    el.hidden = false;
+    let me = null;
+    for (const [k, v] of this.speakerMap) if (v === "me") me = k;
+    const n = this.seenSpeakers.size;
+    el.classList.toggle("ok", me !== null && n >= 2);
+    if (this.noSpeakerInfo && n === 0) {
+      el.textContent = "自动区分没生效：请关掉程序重新启动，再刷新网页";
+    } else if (me === null) {
+      el.textContent = "自动区分：还不认识你的声音，请按住空格说一句";
+    } else if (n < 2) {
+      el.textContent = `自动区分：你是声音${me + 1}；Deepgram 目前只听出 1 个声音`;
+    } else {
+      el.textContent = `自动区分：你是声音${me + 1}，听出 ${n} 个声音`;
+    }
   }
 
   /** 认反了：把「我」和「对方」对调 */
   swap() {
     for (const [k, v] of this.speakerMap) this.speakerMap.set(k, v === "me" ? "them" : "me");
     this.unknownIs = this.unknownIs === "me" ? "them" : "me";
+    this.updateStatus();
   }
 
   endUtterance() {
@@ -1288,7 +1329,13 @@ async function startListening() {
         const diarize = els.speakerMode.value === "auto";
         recognizers.push(new DeepgramStream(await getMic(), "auto", { diarize }));
         els.swapBtn.hidden = !diarize;
-        if (diarize) toast("自动区分说话人：请先按住空格说一句英文，让程序记住你的声音。", 8000);
+        els.diarizeStatus.hidden = true;
+        if (diarize && !serverConfig.features?.includes("diarize")) {
+          toast("后台程序还是旧版本，自动区分说话人不会生效。请关掉程序重新启动（再双击 start-mac.command 或运行 npm start），然后刷新网页。", 15000);
+        } else if (diarize) {
+          toast("自动区分说话人：请先按住空格说一句英文，让程序记住你的声音。", 8000);
+          recognizers[recognizers.length - 1].updateStatus();
+        }
       }
     }
     // 先和 AI 服务建立好连接，第一次提问就不用再等握手
@@ -1316,6 +1363,7 @@ function stopListening() {
   mediaStreams = [];
   audioLevel.reset();
   els.swapBtn.hidden = true;
+  els.diarizeStatus.hidden = true;
   closeLines();
   els.startBtn.textContent = "▶ 开始听";
   els.startBtn.classList.remove("running");

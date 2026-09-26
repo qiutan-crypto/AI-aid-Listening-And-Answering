@@ -64,8 +64,11 @@ export function bridgeToDeepgram(browser, { diarize = false } = {}) {
     if (msg.type === "Results") {
       const alt = msg.channel?.alternatives?.[0];
       const text = alt?.transcript ?? "";
-      // 在终端里也显示识别结果，方便排查
-      if (msg.is_final && text) console.log("[识别]", text);
+      // 在终端里也显示识别结果，方便排查；自动区分说话人时标出 Deepgram 给的说话人编号
+      if (msg.is_final && text) {
+        const ids = [...new Set((alt?.words ?? []).map((w) => w.speaker).filter((x) => x != null))];
+        console.log("[识别]", diarize ? `(说话人 ${ids.length ? ids.join("/") : "?"}) ${text}` : text);
+      }
       sendToBrowser({
         type: "transcript",
         text,

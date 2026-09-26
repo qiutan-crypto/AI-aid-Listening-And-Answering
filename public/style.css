@@ -163,6 +163,9 @@ button.secondary { color: var(--accent); border-color: var(--accent); }
   border-bottom: 1px solid var(--border);
 }
 .pane-head h2 { font-size: 15px; margin: 0; }
+.diarize-status { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--suggest-border); background: var(--suggest-bg); margin-left: 8px; }
+.diarize-status.ok { border-color: var(--me); background: var(--me-bg); color: var(--me); }
+.line .sp { font-size: 11px; color: var(--muted); margin-right: 6px; }
 .legend { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-left: 8px; }
 .dot.them { background: var(--them); }
