@@ -1231,7 +1231,7 @@ class DeepgramStream {
 
   learnMe(sp) {
     if (this.speakerMap.get(sp) === "me") return;
-    for (const [k, v] of this.speakerMap) if (v === "me") this.speakerMap.set(k, "them");
+    // Deepgram 有时把同一个人的声音分成两个编号：按住空格时出现过的编号都算「我」
     this.speakerMap.set(sp, "me");
     if (!this.learnedOnce) {
       this.learnedOnce = true;
@@ -1245,8 +1245,8 @@ class DeepgramStream {
     if (!this.diarize) return;
     const el = els.diarizeStatus;
     el.hidden = false;
-    let me = null;
-    for (const [k, v] of this.speakerMap) if (v === "me") me = k;
+    const mine = [...this.speakerMap].filter(([, v]) => v === "me").map(([k]) => "声音" + (k + 1));
+    const me = mine.length ? mine.join("、") : null;
     const n = this.seenSpeakers.size;
     el.classList.toggle("ok", me !== null && n >= 2);
     if (this.noSpeakerInfo && n === 0) {
@@ -1254,9 +1254,9 @@ class DeepgramStream {
     } else if (me === null) {
       el.textContent = "自动区分：还不认识你的声音，请按住空格说一句";
     } else if (n < 2) {
-      el.textContent = `自动区分：你是声音${me + 1}；Deepgram 目前只听出 1 个声音`;
+      el.textContent = `自动区分：你是${me}；Deepgram 目前只听出 1 个声音`;
     } else {
-      el.textContent = `自动区分：你是声音${me + 1}，听出 ${n} 个声音`;
+      el.textContent = `自动区分：你是${me}，听出 ${n} 个声音（认错的话按住空格说一句，程序会记住）`;
     }
   }
 

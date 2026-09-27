@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import { bridgeToDeepgram, deepgramEnabled } from "./src/deepgram.js";
 import { addDoc, deleteDoc, DocError, listDocs, MAX_TOTAL_CHARS, updateDoc } from "./src/docs.js";
 import { activeProvider, describeError, explainItems, streamHint, warmUp } from "./src/hint.js";
+import { formatTotals, formatUsage, recordCancelled, recordUsage } from "./src/usage.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -48,7 +49,7 @@ app.post("/api/hint", async (req, res) => {
   const t0 = Date.now();
   let firstAt = 0;
   try {
-    await streamHint({
+    const usage = await streamHint({
       context,
       transcript: transcript.slice(-30),
       focus,
@@ -59,9 +60,13 @@ app.post("/api/hint", async (req, res) => {
         res.write(t);
       },
     });
-    if (firstAt) console.log(`[提示] AI 首字 ${((firstAt - t0) / 1000).toFixed(1)} 秒，写完 ${((Date.now() - t0) / 1000).toFixed(1)} 秒`);
+    recordUsage(usage);
+    const secs = (t) => ((t - t0) / 1000).toFixed(1);
+    console.log(`[提示] AI 首字 ${firstAt ? secs(firstAt) : "-"} 秒，写完 ${secs(Date.now())} 秒 · ${formatUsage(usage)}`);
+    console.log(`       ${formatTotals()}`);
   } catch (err) {
-    if (!controller.signal.aborted) {
+    if (controller.signal.aborted) recordCancelled();
+    else {
       res.write(`\n\n[错误] ${describeError(err)}`);
       console.error("hint error:", err);
     }
@@ -96,7 +101,11 @@ app.post("/api/explain", async (req, res) => {
     if (!res.writableFinished) controller.abort();
   });
   try {
-    res.json({ items: await explainItems({ scene, items: clean, signal: controller.signal }) });
+    const { items: out, usage } = await explainItems({ scene, items: clean, signal: controller.signal });
+    recordUsage(usage);
+    console.log(`[中文解释] ${clean.length} 句 · ${formatUsage(usage)}`);
+    console.log(`       ${formatTotals()}`);
+    res.json({ items: out });
   } catch (err) {
     if (controller.signal.aborted) return;
     console.error("explain error:", err);

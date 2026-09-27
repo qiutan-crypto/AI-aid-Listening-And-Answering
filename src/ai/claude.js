@@ -35,6 +35,13 @@ export async function stream({ system, userMessage, onText, signal }) {
   if (message.stop_reason === "refusal") {
     onText("\n\n[AI 没有给出这条建议，请换个说法再试。]");
   }
+  return toUsage(message.usage);
+}
+
+/** Claude 的思考 token 已经算在 output_tokens 里 */
+function toUsage(u) {
+  if (!u) return null;
+  return { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0), output: u.output_tokens ?? 0, thoughts: 0 };
 }
 
 /** 预热：先查一下模型信息，把网络连接建立好（不消耗 token） */
@@ -60,7 +67,7 @@ export async function json({ system, userMessage, schema, signal }) {
   if (message.stop_reason === "refusal") throw new Error("AI 没有生成这部分解释，请再试一次");
   if (message.stop_reason === "max_tokens") throw new Error("对话太长，解释没写完，请再试一次");
   const text = message.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-  return JSON.parse(text);
+  return { data: JSON.parse(text), usage: toUsage(message.usage) };
 }
 
 export function describeError(err) {

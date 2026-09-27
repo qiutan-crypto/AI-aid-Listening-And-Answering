@@ -3,12 +3,13 @@ import { ApiError, GoogleGenAI } from "@google/genai";
 
 // flash 系列速度快，适合实时对话；可以在 .env 里用 GEMINI_MODEL 换别的模型
 const MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
-// 思考越少出结果越快：minimal / low / medium / high；填 off 表示不设置
+// 思考越少出结果越快：minimal / low / medium / high；填 off 表示不设置（用模型默认，通常思考得多、又慢又贵）
 // 通话中默认 minimal（最快）；通话后的中文解释不赶时间，用 low
 const LIVE_THINKING = (process.env.GEMINI_THINKING || "minimal").toUpperCase();
 const REVIEW_THINKING = "LOW";
-// 模型不接受 thinkingLevel 时记下来，以后不再设置
-let thinkingSupported = true;
+/** 实际使用的思考档位。模型不支持某一档时自动换下一档：MINIMAL → LOW → 不设置 */
+const levels = { live: LIVE_THINKING, review: REVIEW_THINKING };
+const FALLBACK = { MINIMAL: "LOW" };
 
 let ai;
 function getClient() {
@@ -22,37 +23,53 @@ export function enabled() {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
-function buildConfig({ system, signal, level, extra }) {
+function buildConfig({ system, signal, kind, extra }) {
   const config = { systemInstruction: system, abortSignal: signal, ...extra };
-  if (thinkingSupported && level !== "OFF") config.thinkingConfig = { thinkingLevel: level };
+  const level = levels[kind];
+  if (level && level !== "OFF") config.thinkingConfig = { thinkingLevel: level };
   return config;
 }
 
-/** 有的模型不支持 thinkingLevel：去掉这个设置再试一次 */
-async function withThinkingFallback(run, canRetry) {
-  try {
-    return await run();
-  } catch (err) {
-    if (thinkingSupported && canRetry() && err instanceof ApiError && err.status === 400) {
-      console.warn(`模型 ${MODEL} 不接受 thinkingLevel，改为不设置：`, err.message);
-      thinkingSupported = false;
+/** 模型不支持设置的思考档位时，换下一档再试（只处理思考相关的 400 错误） */
+async function withThinkingFallback(kind, run, canRetry) {
+  for (;;) {
+    try {
       return await run();
+    } catch (err) {
+      const thinkingError = err instanceof ApiError && err.status === 400 && /thinking/i.test(err.message);
+      if (!thinkingError || !canRetry() || levels[kind] === "OFF") throw err;
+      const next = FALLBACK[levels[kind]] ?? "OFF";
+      console.warn(`模型 ${MODEL} 不支持思考档位 ${levels[kind]}，改用 ${next === "OFF" ? "模型默认设置" : next}`);
+      levels[kind] = next;
     }
-    throw err;
   }
+}
+
+/** Gemini 返回的用量 → { input, output, thoughts, cached }（token 数） */
+function toUsage(meta) {
+  if (!meta) return null;
+  return {
+    input: meta.promptTokenCount ?? 0,
+    output: meta.candidatesTokenCount ?? 0,
+    thoughts: meta.thoughtsTokenCount ?? 0,
+    cached: meta.cachedContentTokenCount ?? 0,
+  };
 }
 
 export async function stream({ system, userMessage, onText, signal }) {
   let sentAny = false;
+  let usage = null;
   await withThinkingFallback(
+    "live",
     async () => {
       const response = await getClient().models.generateContentStream({
         model: MODEL,
         contents: [{ role: "user", parts: [{ text: userMessage }] }],
         // 包含思考用的 token，面试回答也比较长
-        config: buildConfig({ system, signal, level: LIVE_THINKING, extra: { maxOutputTokens: 3000 } }),
+        config: buildConfig({ system, signal, kind: "live", extra: { maxOutputTokens: 3000 } }),
       });
       for await (const chunk of response) {
+        if (chunk.usageMetadata) usage = toUsage(chunk.usageMetadata);
         const text = chunk.text;
         if (text) {
           sentAny = true;
@@ -62,6 +79,7 @@ export async function stream({ system, userMessage, onText, signal }) {
     },
     () => !sentAny,
   );
+  return usage;
 }
 
 /** 预热：先查一下模型信息，把网络连接建立好（不消耗 token） */
@@ -72,6 +90,7 @@ export async function warm() {
 /** 返回按 schema 解析好的 JSON 对象 */
 export async function json({ system, userMessage, schema, signal }) {
   return withThinkingFallback(
+    "review",
     async () => {
       const response = await getClient().models.generateContent({
         model: MODEL,
@@ -79,11 +98,11 @@ export async function json({ system, userMessage, schema, signal }) {
         config: buildConfig({
           system,
           signal,
-          level: REVIEW_THINKING,
+          kind: "review",
           extra: { maxOutputTokens: 16000, responseMimeType: "application/json", responseJsonSchema: schema },
         }),
       });
-      return JSON.parse(response.text ?? "");
+      return { data: JSON.parse(response.text ?? ""), usage: toUsage(response.usageMetadata) };
     },
     () => true,
   );
