@@ -10,10 +10,11 @@ Latency-sensitive; begin your visible answer immediately.`;
 // 通话中只出英文，越短越快；中文解释和关键词在通话结束后的「回顾」里再生成。
 const GENERAL_FORMAT = `Reply in English only (no Chinese, no headings), exactly this format, nothing before or after:
 
-1. <a short, natural, simple English reply the user can say out loud>
-2. <an alternative reply — e.g. a different stance, or asking for clarification>
+1. <the single best, most on-topic reply: short, natural, simple English the user can say out loud>
+2. <optional: only if there is a genuinely different way to answer (a different stance, or asking for clarification)>
 
 Rules:
+- Give 1 reply, or 2 when a real alternative exists. Never more than 2. Answer what THEM actually asked.
 - Use simple, spoken English (CEFR A2-B1), short sentences, easy to pronounce.
 - If the other person is only chatting or confirming (e.g. "okay", "thank you"), keep suggestions very short.
 - If the transcript is too unclear to understand, suggest a polite way to ask them to repeat.`;

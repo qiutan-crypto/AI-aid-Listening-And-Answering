@@ -345,50 +345,53 @@ function onSpeech(speaker, text, isFinal, audio) {
   renderLine(line);
 
   if (speaker === "them") {
-    // 像 voice agent 一样「抢跑」：每确认一段文字就马上去问 AI，不等对方完全说完；
-    // 对方接着说，就在同一张卡片上重新生成
-    if (isFinal && text) scheduleAutoHint(120);
+    if (isFinal && text) onThemFinal();
+    else if (revealTimer) armRevealFallback(); // 对方还在说：「说完」的判断往后推
   }
   return line;
 }
 
-/** 一句话说完（Deepgram 的 utterance_end，或浏览器识别的句子结束） */
-function onUtteranceEnd(speaker) {
+/**
+ * 一句话说完。hard = Deepgram 的 UtteranceEnd（安静了 1 秒多，基本可以确定说完了）；
+ * 否则是 speech_final（只停顿了 0.3 秒，可能只是在想词）。
+ */
+function onUtteranceEnd(speaker, hard = false) {
   closeLines(speaker);
-  if (speaker === "them") scheduleAutoHint(0);
+  if (speaker !== "them" || !els.autoHint.checked) return;
+  const turn = currentTurn();
+  // 停顿很短，但句子已经以 . ? ! 结尾：多半说完了，直接显示；否则再等一会儿
+  if (hard || (turn && /[.?!]["')\]]*$/.test(turn.text))) revealHint();
+  else armRevealFallback(900);
 }
 
 els.clearBtn.addEventListener("click", () => {
   lines = [];
   els.transcript.innerHTML = '<p class="empty">已清空。</p>';
   els.hints.innerHTML = '<p class="empty">已清空。</p>';
-  hinted = { id: 0, len: 0 };
   hintLog = [];
-  cardByLine.clear();
+  cardByTurn.clear();
+  if (spec && !spec.card) spec.controller.abort();
+  spec = null;
   explainCache.clear();
   player.stop();
   recorder.clear();
 });
 
 // ---------- AI 提示 ----------
-let hintTimer = null;
-let hintAbort = null;
-let hinted = { id: 0, len: 0 }; // 已经给过提示的那一行「对方」的话（行号 + 长度）
+// 像 voice agent 一样「抢跑」：对方说话时就在后台准备回答，但先不显示；
+// 等对方说完（一轮结束），再把按完整内容准备好的那一条显示出来。
 /**
- * 每一条提示的记录，回顾时用
- * @type {{id:number, lineId:number|null, afterLineId:number, focus:string, raw:string, done:boolean, superseded:boolean, time:Date}[]}
+ * 每一条显示出来的提示的记录，回顾时用
+ * @type {{id:number, lineId:number|null, turnLineIds:number[], afterLineId:number, focus:string, raw:string, done:boolean, superseded:boolean, time:Date}[]}
  */
 let hintLog = [];
 let hintSeq = 0;
-
-function scheduleAutoHint(delay) {
-  if (!els.autoHint.checked) return;
-  clearTimeout(hintTimer);
-  hintTimer = setTimeout(() => requestHint({ auto: true }), delay);
-}
-
-/** 每句对方的话对应一张提示卡片：对方接着说时更新同一张，不再堆一串 */
-const cardByLine = new Map();
+let prepareTimer = null;
+let revealTimer = null;
+/** 后台正在准备（或已经显示）的最新一条提示 */
+let spec = null;
+/** 一轮对方的话对应一张卡片（key = 这一轮第一行的 id） */
+const cardByTurn = new Map();
 
 function transcriptForAi() {
   return lines
@@ -397,84 +400,144 @@ function transcriptForAi() {
     .slice(-30);
 }
 
-async function requestHint({ auto = false, focus = "" } = {}) {
-  clearTimeout(hintTimer);
-  hintTimer = null;
-
-  const lastThem = [...lines].reverse().find((l) => l.speaker === "them" && (l.text || l.interim));
-  if (auto) {
-    // 这句话已经给过提示、之后也没有变长：不重复请求
-    if (!lastThem || (lastThem.id === hinted.id && lastThem.text.length === hinted.len)) return;
+/** 当前这一轮对方的话：最后一句「我」之后的所有「对方」行 */
+function currentTurn() {
+  const them = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (!(l.text + l.interim).trim()) continue;
+    if (l.speaker === "me") break;
+    them.unshift(l);
   }
-  if (!focus && !lastThem) {
-    toast("还没有听到对方说话。可以在下面的输入框直接问 AI。");
-    return;
-  }
-  if (lastThem && !focus) hinted = { id: lastThem.id, len: lastThem.text.length };
+  if (!them.length) return null;
+  return { key: them[0].id, lines: them, text: them.map((l) => (l.text + " " + l.interim).trim()).join(" ") };
+}
 
-  // 对方又说了新的话：停止上一条还没生成完的提示
-  if (hintAbort) hintAbort.abort();
-  const controller = new AbortController();
-  hintAbort = controller;
+/** 对方确认了一段文字：马上在后台准备提示 */
+function onThemFinal() {
+  if (!els.autoHint.checked) return;
+  clearTimeout(prepareTimer);
+  prepareTimer = setTimeout(prepareHint, 120);
+  // 浏览器自带识别没有「说完」信号；Deepgram 偶尔也会漏：安静一会儿就当说完了
+  armRevealFallback();
+}
 
-  const quote = focus ? "你问：" + focus : "对方：" + (lastThem.text + " " + lastThem.interim).trim();
-  const reuse = !focus && cardByLine.get(lastThem.id);
+function armRevealFallback(delay = 1500) {
+  clearTimeout(revealTimer);
+  revealTimer = setTimeout(revealHint, delay);
+}
+
+/** 按现在的对话内容，在后台准备一条提示（不显示） */
+function prepareHint() {
+  clearTimeout(prepareTimer);
+  prepareTimer = null;
+  if (!currentTurn()) return null;
+  const transcript = transcriptForAi();
+  const sig = JSON.stringify(transcript);
+  if (spec && spec.sig === sig && !spec.error) return spec;
+  // 还没显示的旧准备作废；已经显示出来的让它写完，不打断
+  if (spec && !spec.card) spec.controller.abort();
+  spec = startHintRequest({ transcript, sig });
+  return spec;
+}
+
+/** 对方说完了：把准备好的提示显示出来（没准备好就马上准备，边生成边显示） */
+function revealHint() {
+  clearTimeout(revealTimer);
+  revealTimer = null;
+  const turn = currentTurn();
+  if (!turn) return;
+  const s = prepareHint();
+  if (!s || s.card) return; // 已经显示过同样内容的提示
+  const quote = "对方：" + turn.text;
+  const reuse = cardByTurn.get(turn.key);
   const card = reuse && reuse.isConnected ? reuseHintCard(reuse, quote) : createHintCard(quote);
-  if (!focus) cardByLine.set(lastThem.id, card);
-  // 从「最后一次收到对方的文字」到「AI 出第一个字」的时间，显示在卡片上
-  const speechAt = focus ? Date.now() : lastThem.updated;
-  let raw = "";
-  const entry = {
-    id: ++hintSeq,
-    lineId: focus ? null : lastThem.id,
+  cardByTurn.set(turn.key, card);
+  // 同一张卡片之前的提示（对方中途停顿过）不再是最新的了
+  for (const h of hintLog) if (h.cardTurn === turn.key) h.superseded = true;
+  attachCard(s, card, {
+    lineId: turn.lines[turn.lines.length - 1].id,
+    turnLineIds: turn.lines.map((l) => l.id),
+    cardTurn: turn.key,
+  });
+}
+
+/** 把一条提示接到卡片上：已经生成的内容立刻显示，之后的边生成边显示 */
+function attachCard(s, card, info) {
+  s.card = card;
+  s.revealAt = Date.now();
+  card.dataset.owner = String(s.id);
+  s.entry = {
+    id: s.id,
+    lineId: null,
+    turnLineIds: [],
     afterLineId: lines.length ? lines[lines.length - 1].id : 0,
-    focus,
-    raw: "",
-    done: false,
+    focus: "",
+    raw: s.raw,
+    done: s.done,
     superseded: false,
     time: new Date(),
+    ...info,
   };
-  hintLog.push(entry);
-  card.dataset.owner = String(entry.id);
-
-  try {
-    const res = await fetch("/api/hint", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ context: els.context.value, transcript: transcriptForAi(), focus, scene: els.scene.value }),
-      signal: controller.signal,
-    });
-    if (!res.ok || !res.body) throw new Error(await res.text() || "HTTP " + res.status);
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (!raw) setLatency(card, Date.now() - speechAt);
-      raw += decoder.decode(value, { stream: true });
-      entry.raw = raw;
-      renderHint(card, raw);
-    }
-    raw += decoder.decode();
-    entry.raw = raw;
-    entry.done = true;
-    renderHint(card, raw);
-    card.classList.remove("pending");
-  } catch (err) {
-    card.classList.remove("pending");
-    if (err.name === "AbortError") {
-      entry.superseded = true;
-      // 同一句话的新请求接管了这张卡片：什么都不用做
-      if (card.dataset.owner !== String(entry.id)) return;
-      if (!raw) card.remove();
-      else card.querySelector(".card-head .q").textContent += "（已被新的提示替换）";
-    } else {
-      entry.raw = raw + "\n[错误] " + err.message;
-      renderHint(card, entry.raw);
-    }
-  } finally {
-    if (hintAbort === controller) hintAbort = null;
+  hintLog.push(s.entry);
+  if (s.raw) {
+    // 从「对方说完」到「提示出现」的时间：提前准备好了就是 0 秒
+    setLatency(card, 0);
+    renderHint(card, s.raw);
   }
+  if (s.done || s.error) finishCard(s);
+}
+
+function finishCard(s) {
+  if (!s.card || s.card.dataset.owner !== String(s.id)) return;
+  if (s.error) renderHint(s.card, s.raw + "\n[错误] " + s.error);
+  s.card.classList.remove("pending");
+}
+
+/** 发一个提示请求。返回的对象会不断更新：raw（已生成的文字）、done、error */
+function startHintRequest({ transcript, sig, focus = "" }) {
+  const s = { id: ++hintSeq, sig, raw: "", done: false, error: "", card: null, entry: null, controller: new AbortController() };
+  (async () => {
+    try {
+      const res = await fetch("/api/hint", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ context: els.context.value, transcript, focus, scene: els.scene.value }),
+        signal: s.controller.signal,
+      });
+      if (!res.ok || !res.body) throw new Error((await res.text()) || "HTTP " + res.status);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const first = !s.raw;
+        s.raw += decoder.decode(value, { stream: true });
+        if (s.entry) s.entry.raw = s.raw;
+        if (s.card && s.card.dataset.owner === String(s.id)) {
+          if (first) setLatency(s.card, Date.now() - s.revealAt);
+          renderHint(s.card, s.raw);
+        }
+      }
+      s.raw += decoder.decode();
+      s.done = true;
+      if (s.entry) Object.assign(s.entry, { raw: s.raw, done: true });
+      if (s.card && s.card.dataset.owner === String(s.id)) renderHint(s.card, s.raw);
+      finishCard(s);
+    } catch (err) {
+      if (err.name === "AbortError") return; // 后台准备被更新的内容取代了，本来就没显示
+      s.error = err.message;
+      if (s.entry) s.entry.raw = s.raw + "\n[错误] " + err.message;
+      finishCard(s);
+    }
+  })();
+  return s;
+}
+
+/** 在输入框里直接问 AI：马上显示 */
+function askAi(focus) {
+  const s = startHintRequest({ transcript: transcriptForAi(), sig: "", focus });
+  attachCard(s, createHintCard("你问：" + focus), { focus });
 }
 
 /** 同一句话再次生成：把卡片移到最上面，旧内容先留着，新内容一到就替换 */
@@ -562,14 +625,18 @@ function renderHint(card, raw) {
 
 els.hintNow.addEventListener("click", () => {
   closeLines();
-  requestHint();
+  if (!currentTurn()) {
+    toast("还没有听到对方说话。可以在下面的输入框直接问 AI。");
+    return;
+  }
+  revealHint();
 });
 els.askForm.addEventListener("submit", (e) => {
   e.preventDefault();
   const q = els.askInput.value.trim();
   if (!q) return;
   els.askInput.value = "";
-  requestHint({ focus: q });
+  askAi(q);
 });
 
 // ---------- 回顾：按时间顺序，一句对一句；再生成中文解释和关键词 ----------
@@ -589,8 +656,14 @@ function suggestionsOf(raw) {
 
 /** 一句话可能生成过好几次提示（对方话变长了），取最后一次完整的 */
 function bestHintFor(lineId) {
-  const list = hintLog.filter((h) => h.lineId === lineId && h.raw);
+  // 同一轮里可能显示过好几次（对方中途停顿过），取最后显示、内容最完整的那条
+  const list = hintLog.filter((h) => h.lineId === lineId && h.raw && !h.superseded);
   return list.filter((h) => h.done).pop() || list.pop() || null;
+}
+
+/** 这一行是不是某一轮的中间部分（提示显示在这一轮的最后一行上） */
+function inShownTurn(lineId) {
+  return hintLog.some((h) => h.turnLineIds?.includes(lineId) && h.lineId !== lineId);
 }
 
 function buildReviewRows() {
@@ -662,7 +735,7 @@ function renderReview() {
     const right = document.createElement("div");
     right.className = "rv-hint";
     if (row.kind !== "me") {
-      if (row.suggestions.length === 0) {
+      if (row.suggestions.length === 0 && !(row.kind === "them" && inShownTurn(Number(row.key.slice(1))))) {
         const none = document.createElement("div");
         none.className = "none";
         none.textContent = "（这句没有生成提示）";
@@ -1087,9 +1160,9 @@ class DeepgramStream {
           const audio = this.track ? { trackId: this.track.id, start: msg.start, end: msg.start + msg.duration } : undefined;
           onSpeech(this.currentSpeaker, msg.text, msg.isFinal, audio);
         }
-        if (msg.speechFinal) this.endUtterance();
+        if (msg.speechFinal) this.endUtterance(false);
       } else if (msg.type === "utterance_end") {
-        this.endUtterance();
+        this.endUtterance(true);
       } else if (msg.type === "error") {
         toast(msg.message, 8000);
         setStatus("识别出错", "error");
@@ -1194,10 +1267,11 @@ class DeepgramStream {
     this.updateStatus();
   }
 
-  endUtterance() {
-    if (!this.inUtterance) return;
+  /** hard = Deepgram 的 UtteranceEnd（安静了 1 秒多）；否则是 speech_final（只停顿了一下） */
+  endUtterance(hard) {
+    const was = this.inUtterance;
     this.inUtterance = false;
-    onUtteranceEnd(this.currentSpeaker);
+    if (was || hard) onUtteranceEnd(this.currentSpeaker, hard);
   }
 
   stop() {
