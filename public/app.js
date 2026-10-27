@@ -50,6 +50,7 @@ const els = {
   askForm: $("askForm"),
   askInput: $("askInput"),
   toast: $("toast"),
+  hintState: $("hintState"),
 };
 
 // ---------- 设置（保存在本机浏览器） ----------
@@ -84,7 +85,8 @@ function loadSettings() {
   els.source.value = store.get("source", "mic");
   els.meMic.checked = store.get("meMic", true);
   els.autoHint.checked = store.get("autoHint", true);
-  els.speakerMode.value = store.get("speakerMode", "hold");
+  // 新的存储名：旧版本默认是「手动」并且已经存过，换个名字让新的默认「智能」生效
+  els.speakerMode.value = store.get("speakerMode2", "auto");
   els.recordAudio.checked = store.get("recordAudio", true);
   els.context.value = store.get("context", "");
   applyFontSize();
@@ -98,7 +100,7 @@ function saveSettings() {
   store.set("source", els.source.value);
   store.set("meMic", els.meMic.checked);
   store.set("autoHint", els.autoHint.checked);
-  store.set("speakerMode", els.speakerMode.value);
+  store.set("speakerMode2", els.speakerMode.value);
   store.set("recordAudio", els.recordAudio.checked);
   store.set("context", els.context.value);
 }
@@ -123,7 +125,7 @@ function updateSettingsUi() {
   if (!system && els.speakerMode.value === "auto") {
     notes.push(
       deepgram
-        ? "自动区分说话人：开始后先按住空格说一句英文，让程序记住你的声音；以后不按空格也能分出「我」和「对方」。认反了点字幕下面的「⇄ 对调」。"
+        ? "智能区分说话人：程序听声音的大小和音色（对着麦克风说话的你 vs 手机外放 / 远处的对方），再加上 Deepgram 的自动区分；你照着 AI 提示念的话也会被认出来是「我」。刚开始需要几句话来学习，开始后先按住空格说一句英文会学得更快。认反了点字幕下面的「⇄ 对调」。"
         : "⚠️ 自动区分说话人需要 Deepgram，浏览器自带识别只能用手动方式（按住空格）。",
     );
   }
@@ -210,7 +212,7 @@ document.addEventListener("keyup", (e) => {
 });
 // 自动区分说话人认反了：以后的话对调，已经自动标过的字幕也一起改过来
 els.swapBtn.addEventListener("click", () => {
-  const streams = recognizers.filter((r) => r instanceof DeepgramStream && r.diarize);
+  const streams = recognizers.filter((r) => r instanceof DeepgramStream && r.smart);
   if (!streams.length) return;
   for (const r of streams) r.swap();
   for (const l of lines) {
@@ -326,6 +328,8 @@ function onSpeech(speaker, text, isFinal, audio) {
     return;
   }
   const line = openLine(speaker);
+  // 这一行在这条声音里的时间范围（智能区分说话人回头重新判断时用）
+  if (audio) line.span = line.span ? { start: Math.min(line.span.start, audio.start), end: Math.max(line.span.end, audio.end) } : { start: audio.start, end: audio.end };
   if (audio && recorder.has(audio.trackId)) {
     // 一行可能由好几段组成：录音范围取最早的开始到最晚的结束
     if (!line.audio || line.audio.trackId !== audio.trackId) line.audio = { ...audio };
@@ -345,8 +349,8 @@ function onSpeech(speaker, text, isFinal, audio) {
   renderLine(line);
 
   if (speaker === "them") {
-    if (isFinal && text) onThemFinal();
-    else if (revealTimer) armRevealFallback(); // 对方还在说：「说完」的判断往后推
+    if (isFinal) onThemFinal();
+    else onThemInterim(text);
   }
   return line;
 }
@@ -361,7 +365,7 @@ function onUtteranceEnd(speaker, hard = false) {
   const turn = currentTurn();
   // 停顿很短，但句子已经以 . ? ! 结尾：多半说完了，直接显示；否则再等一会儿
   if (hard || (turn && /[.?!]["')\]]*$/.test(turn.text))) revealHint();
-  else armRevealFallback(900);
+  else armRevealFallback(600);
 }
 
 els.clearBtn.addEventListener("click", () => {
@@ -372,6 +376,7 @@ els.clearBtn.addEventListener("click", () => {
   cardByTurn.clear();
   if (spec && !spec.card) spec.controller.abort();
   spec = null;
+  showPrepState();
   explainCache.clear();
   player.stop();
   recorder.clear();
@@ -388,6 +393,7 @@ let hintLog = [];
 let hintSeq = 0;
 let prepareTimer = null;
 let revealTimer = null;
+let lastPrepareAt = 0;
 /** 后台正在准备（或已经显示）的最新一条提示 */
 let spec = null;
 /** 一轮对方的话对应一张卡片（key = 这一轮第一行的 id） */
@@ -417,12 +423,27 @@ function currentTurn() {
 function onThemFinal() {
   if (!els.autoHint.checked) return;
   clearTimeout(prepareTimer);
-  prepareTimer = setTimeout(prepareHint, 120);
+  prepareTimer = setTimeout(prepareHint, 60);
   // 浏览器自带识别没有「说完」信号；Deepgram 偶尔也会漏：安静一会儿就当说完了
   armRevealFallback();
 }
 
-function armRevealFallback(delay = 1500) {
+/**
+ * 对方还在说（临时文字）：像 voice agent 一样不等这句确认，就按已经听到的内容提前准备。
+ * 对方说完时，确认的文字多半和最后一次临时文字一样，准备好的提示就能直接显示。
+ */
+function onThemInterim(text) {
+  if (!els.autoHint.checked) return;
+  if (revealTimer) armRevealFallback(); // 对方还在说：「说完」的判断往后推
+  if (prepareTimer) return;
+  const turn = currentTurn();
+  if (!turn || wordsOf(turn.text).length < 3) return;
+  // 问句说到问号多半就说完了：马上准备；否则最多每 0.7 秒按最新的文字重新准备一次
+  const wait = /\?\s*$/.test(text) ? 0 : Math.max(0, 700 - (Date.now() - lastPrepareAt));
+  prepareTimer = setTimeout(prepareHint, wait);
+}
+
+function armRevealFallback(delay = 1200) {
   clearTimeout(revealTimer);
   revealTimer = setTimeout(revealHint, delay);
 }
@@ -433,11 +454,14 @@ function prepareHint() {
   prepareTimer = null;
   if (!currentTurn()) return null;
   const transcript = transcriptForAi();
-  const sig = JSON.stringify(transcript);
+  // 只比较单词：临时文字和确认后的文字常常只差标点、大小写，这时准备好的提示照样能用
+  const sig = transcript.map((l) => l.speaker + ":" + wordsOf(l.text).join(" ")).join("\n");
   if (spec && spec.sig === sig && !spec.error) return spec;
   // 还没显示的旧准备作废；已经显示出来的让它写完，不打断
   if (spec && !spec.card) spec.controller.abort();
   spec = startHintRequest({ transcript, sig });
+  lastPrepareAt = Date.now();
+  showPrepState();
   return spec;
 }
 
@@ -465,6 +489,7 @@ function revealHint() {
 /** 把一条提示接到卡片上：已经生成的内容立刻显示，之后的边生成边显示 */
 function attachCard(s, card, info) {
   s.card = card;
+  if (s === spec) showPrepState();
   s.revealAt = Date.now();
   card.dataset.owner = String(s.id);
   s.entry = {
@@ -521,6 +546,7 @@ function startHintRequest({ transcript, sig, focus = "" }) {
       }
       s.raw += decoder.decode();
       s.done = true;
+      if (s === spec) showPrepState();
       if (s.entry) Object.assign(s.entry, { raw: s.raw, done: true });
       if (s.card && s.card.dataset.owner === String(s.id)) renderHint(s.card, s.raw);
       finishCard(s);
@@ -532,6 +558,30 @@ function startHintRequest({ transcript, sig, focus = "" }) {
     }
   })();
   return s;
+}
+
+/** 提示栏上方的小字：AI 是不是已经在后台准备好了 */
+function showPrepState() {
+  const el = els.hintState;
+  if (spec && !spec.card && !spec.error) {
+    el.textContent = spec.done ? "✓ 已准备好，对方一说完就显示" : "⏳ 对方在说，AI 正在提前准备…";
+  } else {
+    el.textContent = "";
+  }
+}
+
+/** 最近显示过的提示里的每一句（和每张卡片的全文），用来认出「我在照着提示念」 */
+function recentSuggestions() {
+  const out = [];
+  const now = Date.now();
+  for (let i = hintLog.length - 1; i >= 0 && i >= hintLog.length - 4; i--) {
+    const h = hintLog[i];
+    if (now - h.time.getTime() > 180000) break;
+    const list = suggestionsOf(h.raw);
+    for (const t of list) out.push(wordsOf(t));
+    if (list.length > 1) out.push(wordsOf(list.join(" ")));
+  }
+  return out;
 }
 
 /** 在输入框里直接问 AI：马上显示 */
@@ -1021,13 +1071,13 @@ els.downloadAudioBtn.addEventListener("click", () => {
   saveFile(blob, `recording-${fileStamp()}.wav`);
 });
 
-/** 把一路声音接到 pcm-worklet：每 100ms 回调一次（16kHz PCM + 音量） */
+/** 把一路声音接到 pcm-worklet：每 100ms 回调一次（16kHz PCM + 音量 + 声音特征） */
 async function attachWorklet(media, onChunk) {
   const ctx = new AudioContext();
   await ctx.audioWorklet.addModule("pcm-worklet.js");
   const src = ctx.createMediaStreamSource(media);
   const node = new AudioWorkletNode(ctx, "pcm-downsampler");
-  node.port.onmessage = (ev) => onChunk(ev.data.audio, ev.data.peak);
+  node.port.onmessage = (ev) => onChunk(ev.data.audio, ev.data.peak, ev.data);
   src.connect(node);
   // 不连到扬声器，避免回声；有些浏览器要求节点连接到 destination 才会运行，用静音增益
   const mute = ctx.createGain();
@@ -1046,8 +1096,6 @@ class MicCapture {
   }
   async start() {
     this.ctx = await attachWorklet(this.media, (audio, peak) => {
-      // 第一段声音开头的时间：Deepgram 给的秒数从这里算起
-      this.t0 ||= performance.now() - (audio.byteLength / 2 / SAMPLE_RATE) * 1000;
       audioLevel.report(this, peak);
       recorder.append(this.track, audio);
     });
@@ -1076,14 +1124,14 @@ class BrowserRecognizer {
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
         if (r.isFinal) {
-          this.speaker = isMeSpeaking() ? "me" : "them";
+          this.speaker = this.speakerFor(r[0].transcript);
           onSpeech(this.speaker, r[0].transcript, true, this.audioNow());
         } else {
           interim += r[0].transcript;
         }
       }
       if (interim) {
-        this.speaker = isMeSpeaking() ? "me" : "them";
+        this.speaker = this.speakerFor(interim);
         onSpeech(this.speaker, interim, false, this.audioNow());
       }
     };
@@ -1103,6 +1151,10 @@ class BrowserRecognizer {
         try { this.rec.start(); } catch {}
       }
     };
+  }
+  /** 按住空格，或者照着 AI 提示念的话，算「我」 */
+  speakerFor(text) {
+    return isMeSpeaking() || looksLikeSuggestion(text, recentSuggestions()) ? "me" : "them";
   }
   /** 没有精确时间：识别结果大约比说话晚 1 秒左右到，往前多算一点 */
   audioNow() {
@@ -1125,14 +1177,17 @@ class BrowserRecognizer {
 class DeepgramStream {
   /**
    * @param {MediaStream} media
-   * @param {"me"|"them"|"auto"} speaker auto = 单麦克风模式，按住空格算「我」
+   * @param {"me"|"them"|"auto"} speaker auto = 单麦克风模式，要分辨是谁在说
+   * @param {{smart?: boolean}} [opts] smart = 智能区分说话人（声音特征 + Deepgram 自动区分）；否则只看有没有按住空格
    */
-  constructor(media, speaker, { diarize = false } = {}) {
+  constructor(media, speaker, { smart = false } = {}) {
     this.media = media;
-    this.diarize = diarize;
-    /** 自动区分说话人：Deepgram 的说话人编号 → 「me」/「them」。按住空格说话时学会哪个编号是我 */
-    this.speakerMap = new Map();
-    this.unknownIs = "them";
+    this.smart = speaker === "auto" && smart;
+    this.diarize = this.smart;
+    /** 声音特征模型：分出两个声音，再判断哪个是我 */
+    this.voice = this.smart ? new VoiceModel() : null;
+    /** Deepgram 的说话人编号 → 多少证据说它是「我」/「对方」 */
+    this.spVotes = new Map();
     this.seenSpeakers = new Set();
     this.fixedSpeaker = speaker;
     this.currentSpeaker = speaker === "auto" ? "them" : speaker;
@@ -1157,8 +1212,7 @@ class DeepgramStream {
           this.handleSplit(msg);
         } else {
           if (this.fixedSpeaker === "auto") this.currentSpeaker = this.speakerNow();
-          const audio = this.track ? { trackId: this.track.id, start: msg.start, end: msg.start + msg.duration } : undefined;
-          onSpeech(this.currentSpeaker, msg.text, msg.isFinal, audio);
+          onSpeech(this.currentSpeaker, msg.text, msg.isFinal, this.audioRange(msg.start, msg.start + msg.duration));
         }
         if (msg.speechFinal) this.endUtterance(false);
       } else if (msg.type === "utterance_end") {
@@ -1179,32 +1233,67 @@ class DeepgramStream {
       for (const chunk of this.queue.splice(0)) this.ws.send(chunk);
     };
 
-    this.ctx = await attachWorklet(this.media, (audio, peak) => {
+    this.ctx = await attachWorklet(this.media, (audio, peak, data) => {
+      // 第一段声音开头的时间（performance.now 毫秒）：Deepgram 给的秒数从这里算起
+      this.t0 ||= performance.now() - (audio.byteLength / 2 / SAMPLE_RATE) * 1000;
+      if (this.voice && data.feats) this.voice.addFrames(data.feats, data.frameSec, data.hasAir);
       audioLevel.report(this, peak);
       recorder.append(this.track, audio);
       if (this.ws.readyState === WebSocket.OPEN) this.ws.send(audio);
       else if (this.ws.readyState === WebSocket.CONNECTING) this.queue.push(audio);
     });
+    this.updateStatus();
+  }
+
+  /** 这段话在这条声音里的时间（秒）。没录音时 trackId 为 0，只用来记时间 */
+  audioRange(start, end) {
+    return { trackId: this.track?.id ?? 0, start, end };
   }
 
   /**
-   * 单麦克风模式：按每个单词说出的时间，对照「按住空格」的时间段，分成「我」和「对方」。
-   * 这样就算两个人的话被识别成同一句，也会在松开空格的地方切开。
+   * 单麦克风模式：把单词按停顿、按住空格、Deepgram 说话人编号分成小段，每段判断是谁说的。
+   * 这样就算两个人的话被识别成同一句，也会在换人的地方切开。
    */
   handleSplit(msg) {
-    const runs = [];
+    const groups = [];
+    let prevEnd = -Infinity;
     for (const w of msg.words) {
       const held = wasMeAt(this.t0 + ((w.s + w.e) / 2) * 1000);
       const sp = this.diarize && w.sp != null ? w.sp : null;
-      // 按住空格时说的词：一定算「我」，并记住这个声音（只从确认过的结果里学）
-      if (held && sp !== null && msg.isFinal) this.learnMe(sp);
-      const speaker = held ? "me" : sp !== null ? this.speakerMap.get(sp) ?? this.unknownIs : "them";
-      const last = runs[runs.length - 1];
-      if (last && last.speaker === speaker && last.sp === sp) {
-        last.words.push(w.w);
-        last.e = w.e;
+      const g = groups[groups.length - 1];
+      if (g && g.held === held && g.sp === sp && w.s - prevEnd < 0.35) {
+        g.words.push(w.w);
+        g.e = w.e;
       } else {
-        runs.push({ speaker, sp, words: [w.w], s: w.s, e: w.e });
+        groups.push({ held, sp, words: [w.w], s: w.s, e: w.e });
+      }
+      prevEnd = w.e;
+    }
+    const suggestions = recentSuggestions();
+    for (const g of groups) {
+      g.text = g.words.join(" ");
+      g.echo = !g.held && looksLikeSuggestion(g.text, suggestions);
+      g.v = this.voice?.vectorAt(g.s, g.e) ?? null;
+      g.speaker = this.decide(g);
+    }
+    // 只从确认过的结果里学习
+    if (msg.isFinal) {
+      const wasReady = this.voice?.ready();
+      for (const g of groups) this.learn(g);
+      if (this.voice && !wasReady && this.voice.ready()) this.onVoiceReady();
+    }
+
+    // 相邻的、同一个人的小段合起来
+    const runs = [];
+    for (const g of groups) {
+      const last = runs[runs.length - 1];
+      if (last && last.speaker === g.speaker && last.sp === g.sp) {
+        last.words.push(...g.words);
+        last.e = g.e;
+        last.auto ||= !g.held;
+        last.echo ||= g.echo;
+      } else {
+        runs.push({ speaker: g.speaker, sp: g.sp, words: [...g.words], s: g.s, e: g.e, auto: !g.held, echo: g.echo });
       }
     }
     // 这一段里没有出现的那一方：清掉它还没确认的临时文字，免得残留
@@ -1212,13 +1301,13 @@ class DeepgramStream {
       if (!runs.some((r) => r.speaker === speaker)) clearInterim(speaker);
     }
     for (const r of runs) {
-      const audio = this.track ? { trackId: this.track.id, start: r.s, end: r.e } : undefined;
-      const line = onSpeech(r.speaker, r.words.join(" "), msg.isFinal, audio);
-      if (line && r.sp !== null) {
+      const line = onSpeech(r.speaker, r.words.join(" "), msg.isFinal, this.audioRange(r.s, r.e));
+      if (!line) continue;
+      // 记下这行是自动判断的（不是按住空格），对调或重新判断时一起改
+      if (r.auto) line.autoLabeled = true;
+      if (r.echo) line.echo = true;
+      if (r.sp !== null) {
         line.sp = r.sp;
-        if (msg.isFinal) this.seenSpeakers.add(r.sp);
-        // 记下这行是按「自动区分」标的，对调时一起改
-        if (!wasMeAt(this.t0 + r.s * 1000)) line.autoLabeled = true;
         renderLine(line);
       }
     }
@@ -1229,41 +1318,86 @@ class DeepgramStream {
     this.currentSpeaker = runs[runs.length - 1].speaker;
   }
 
-  learnMe(sp) {
-    if (this.speakerMap.get(sp) === "me") return;
-    // Deepgram 有时把同一个人的声音分成两个编号：按住空格时出现过的编号都算「我」
-    this.speakerMap.set(sp, "me");
-    if (!this.learnedOnce) {
+  /** 几种线索一起打分：大于 0 算「我」 */
+  decide(g) {
+    if (g.held) return "me";
+    let score = -0.3; // 什么都看不出来的时候算「对方」
+    if (g.echo) score += 2.5;
+    if (g.sp !== null) score += 1.5 * this.spLean(g.sp);
+    if (this.voice) score += this.voice.score(g.v);
+    return score > 0 ? "me" : "them";
+  }
+
+  /** Deepgram 这个说话人编号像不像「我」：-1 ~ 1 */
+  spLean(sp) {
+    const lean = (v) => (v ? (v.me - v.them) / (v.me + v.them + 2) : 0);
+    const mine = lean(this.spVotes.get(sp));
+    if (mine !== 0) return mine;
+    // 还没有证据的新编号：如果别的编号已经确定是我，这个多半是对方
+    for (const [k, v] of this.spVotes) if (k !== sp && lean(v) > 0.5) return -0.5;
+    return 0;
+  }
+
+  learn(g) {
+    const sure = g.held || g.echo;
+    this.voice?.add(g.v, sure);
+    if (g.sp === null) return;
+    this.seenSpeakers.add(g.sp);
+    const votes = this.spVotes.get(g.sp) ?? { me: 0, them: 0 };
+    if (sure) votes.me += 3;
+    else {
+      const s = this.voice?.score(g.v) ?? 0;
+      if (s > 0.7) votes.me += 1;
+      else if (s < -0.7) votes.them += 1;
+    }
+    this.spVotes.set(g.sp, votes);
+    if (g.held && !this.learnedOnce) {
       this.learnedOnce = true;
       toast("已经记住你的声音了：之后不按空格，程序也会自动分出「我」和「对方」。", 6000);
     }
-    this.updateStatus();
   }
 
-  /** 字幕上方的小标签：自动区分现在是什么状态 */
+  /** 声音特征第一次能分清两个人：把之前自动标的字幕按新的判断重新标一遍 */
+  onVoiceReady() {
+    let changed = 0;
+    for (const l of lines.slice(-40)) {
+      if (!l.autoLabeled || !l.span) continue;
+      const g = { held: false, sp: l.sp ?? null, echo: Boolean(l.echo), v: this.voice.vectorAt(l.span.start, l.span.end) };
+      const speaker = this.decide(g);
+      if (speaker === l.speaker) continue;
+      l.speaker = speaker;
+      l.el.className = "line " + speaker;
+      renderLine(l);
+      changed++;
+    }
+    if (changed) toast(`已经分清你和对方的声音，前面 ${changed} 句重新标了说话人。`, 6000);
+  }
+
+  /** 字幕上方的小标签：智能区分现在是什么状态 */
   updateStatus() {
-    if (!this.diarize) return;
+    if (!this.smart) return;
     const el = els.diarizeStatus;
     el.hidden = false;
-    const mine = [...this.speakerMap].filter(([, v]) => v === "me").map(([k]) => "声音" + (k + 1));
-    const me = mine.length ? mine.join("、") : null;
-    const n = this.seenSpeakers.size;
-    el.classList.toggle("ok", me !== null && n >= 2);
-    if (this.noSpeakerInfo && n === 0) {
-      el.textContent = "自动区分没生效：请关掉程序重新启动，再刷新网页";
-    } else if (me === null) {
-      el.textContent = "自动区分：还不认识你的声音，请按住空格说一句";
-    } else if (n < 2) {
-      el.textContent = `自动区分：你是${me}；Deepgram 目前只听出 1 个声音`;
+    const ready = this.voice.ready();
+    const mine = [...this.spVotes].filter(([sp]) => this.spLean(sp) > 0.3).map(([k]) => "声音" + (k + 1));
+    el.classList.toggle("ok", ready || mine.length > 0);
+    if (ready) {
+      el.textContent = `智能区分：已分清你和对方 ✓${mine.length ? `（你是${mine.join("、")}）` : ""}`;
+      el.title = `声音特征分离度 ${this.voice.fit.sep.toFixed(1)}（${this.voice.fit.via === "label" ? "按你按空格 / 念提示时的声音学的" : "按音量和频带自动判断"}）`;
+    } else if (this.noSpeakerInfo && this.seenSpeakers.size === 0 && !this.voice.fit) {
+      el.textContent = "智能区分：正在学习声音（Deepgram 自动区分没生效，可以重启程序再刷新网页）";
     } else {
-      el.textContent = `自动区分：你是${me}，听出 ${n} 个声音（认错的话按住空格说一句，程序会记住）`;
+      el.textContent = mine.length
+        ? `智能区分：你是${mine.join("、")}，还在学习声音特征…`
+        : "智能区分：正在学习两个人的声音…（按住空格说一句会更快）";
+      el.title = "";
     }
   }
 
   /** 认反了：把「我」和「对方」对调 */
   swap() {
-    for (const [k, v] of this.speakerMap) this.speakerMap.set(k, v === "me" ? "them" : "me");
-    this.unknownIs = this.unknownIs === "me" ? "them" : "me";
+    if (this.voice) this.voice.flip = !this.voice.flip;
+    for (const v of this.spVotes.values()) [v.me, v.them] = [v.them, v.me];
     this.updateStatus();
   }
 
@@ -1341,13 +1475,14 @@ let listening = false;
 let recognizers = [];
 let mediaStreams = [];
 
-async function getMic() {
+/** raw = 不做降噪、自动音量：智能区分说话人要靠原始的音量和频带分辨是谁在说 */
+async function getMic({ raw = false } = {}) {
   const deviceId = els.micDevice.value;
   const s = await navigator.mediaDevices.getUserMedia({
     audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      echoCancellation: !raw,
+      noiseSuppression: !raw,
+      autoGainControl: !raw,
       ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
     },
   });
@@ -1400,15 +1535,14 @@ async function startListening() {
         recognizers.push(new DeepgramStream(await getSystemAudio(), "them"));
         if (els.meMic.checked) recognizers.push(new DeepgramStream(await getMic(), "me"));
       } else {
-        const diarize = els.speakerMode.value === "auto";
-        recognizers.push(new DeepgramStream(await getMic(), "auto", { diarize }));
-        els.swapBtn.hidden = !diarize;
+        const smart = els.speakerMode.value === "auto";
+        recognizers.push(new DeepgramStream(await getMic({ raw: smart }), "auto", { smart }));
+        els.swapBtn.hidden = !smart;
         els.diarizeStatus.hidden = true;
-        if (diarize && !serverConfig.features?.includes("diarize")) {
-          toast("后台程序还是旧版本，自动区分说话人不会生效。请关掉程序重新启动（再双击 start-mac.command 或运行 npm start），然后刷新网页。", 15000);
-        } else if (diarize) {
-          toast("自动区分说话人：请先按住空格说一句英文，让程序记住你的声音。", 8000);
-          recognizers[recognizers.length - 1].updateStatus();
+        if (smart && !serverConfig.features?.includes("diarize")) {
+          toast("后台程序还是旧版本，自动区分说话人不会完全生效。请关掉程序重新启动（再双击 start-mac.command 或运行 npm start），然后刷新网页。", 15000);
+        } else if (smart) {
+          toast("智能区分说话人：先按住空格说一句英文，程序会更快学会你的声音。", 8000);
         }
       }
     }

@@ -23,7 +23,8 @@ export function bridgeToDeepgram(browser, { diarize = false } = {}) {
     smart_format: "true",
     punctuate: "true",
     endpointing: "300",
-    utterance_end_ms: "1200",
+    // Deepgram 允许的最小值：安静 1 秒就算这句说完了
+    utterance_end_ms: "1000",
   });
   if (diarize) params.set("diarize", "true");
 

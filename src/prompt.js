@@ -5,7 +5,11 @@ const BASE = `You are a real-time conversation coach for a Chinese speaker whose
 They are in a live English conversation (phone call, meeting, or interview). You see the transcript
 (speech-to-text, so expect small recognition errors) and must help them reply quickly.
 
-Latency-sensitive; begin your visible answer immediately.`;
+Speaker labels (ME / THEM) come from automatic voice detection and can occasionally be wrong.
+If a THEM line is clearly the user's own words (for example it repeats a reply you would suggest,
+or answers the previous THEM question), treat it as said by the user and help with what THEM said last.
+
+Latency-sensitive; begin your visible answer immediately. Put the best reply first and keep it short.`;
 
 // 通话中只出英文，越短越快；中文解释和关键词在通话结束后的「回顾」里再生成。
 const GENERAL_FORMAT = `Reply in English only (no Chinese, no headings), exactly this format, nothing before or after:

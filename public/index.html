@@ -52,8 +52,8 @@
     <div class="row" id="speakerModeRow">
       <label>区分说话人</label>
       <select id="speakerMode">
+        <option value="auto">智能：听声音自动分辨，认出我念的提示（需 Deepgram）</option>
         <option value="hold">手动：我说话时按住空格</option>
-        <option value="auto">自动：Deepgram 听声音分辨（需 Deepgram）</option>
       </select>
     </div>
     <div class="row" id="meMicRow">
@@ -112,6 +112,7 @@
     <section class="pane">
       <div class="pane-head">
         <h2>AI 提示 · 可以这样回答</h2>
+        <span id="hintState" class="hint-state"></span>
       </div>
       <div id="hints" class="scroll hints">
         <p class="empty">对方说完一句话，AI 会在这里告诉你意思和建议的回答。最新的在最上面。</p>
@@ -138,6 +139,7 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
+  <script src="speaker.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

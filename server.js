@@ -183,6 +183,6 @@ wss.on("error", onListenError);
 server.listen(PORT, HOST, () => {
   console.log(`对话辅助已启动： http://localhost:${PORT}`);
   const ai = activeProvider();
-  console.log(`  AI 提示:  ${ai ? ai.name : "未配置（请在 .env 填写 GEMINI_API_KEY）"}`);
+  console.log(`  AI 提示:  ${ai ? ai.name + (ai.modelInfo ? " · " + ai.modelInfo() : "") : "未配置（请在 .env 填写 GEMINI_API_KEY）"}`);
   console.log(`  Deepgram: ${deepgramEnabled() ? "已配置" : "未配置（只能用浏览器自带识别）"}`);
 });
